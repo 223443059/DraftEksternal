@@ -218,6 +218,7 @@ export default function SupplierEvaluation({ changePage, onLogout }) {
                   </div>
                 </div>
               )}
+              
             </div>
           </div>
         </div>
