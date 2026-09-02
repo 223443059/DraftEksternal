@@ -82,6 +82,37 @@ export default function SupplierEvaluation({ changePage, onLogout }) {
     reader.readAsArrayBuffer(file);
   };
 
+  // ✅ TAMBAHAN: Fungsi async untuk POST Supplier Evaluation ke backend
+  const saveSupplierEvaluationToBackend = async (evaluationData) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/supplier-evaluations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          supplier_id: evaluationData.supplier_id || 1,
+          weighted_score: evaluationData.weighted_score,
+          rating_tier: evaluationData.rating_tier,
+          evaluation_date: evaluationData.evaluation_date || new Date().toISOString().split('T')[0]
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Backend error:', errorData);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log('✅ Supplier Evaluation berhasil disimpan ke database:', result);
+      return true;
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      return false;
+    }
+  };
+
   const processImportedData = (data) => {
     const validData = data.filter(row => row['Supplier Name'] && row['Weighted Score (/5)'] !== undefined);
     
@@ -164,6 +195,17 @@ export default function SupplierEvaluation({ changePage, onLogout }) {
     // Simpan ke localStorage agar tidak hilang saat pindah halaman
     localStorage.setItem('supplierData', JSON.stringify(validData));
     localStorage.setItem('kpiData', JSON.stringify(calculatedKpi));
+    
+    // ✅ TAMBAHAN: POST setiap supplier evaluation ke backend
+    validData.forEach(row => {
+      const evaluationData = {
+        supplier_id: 1, // Default, bisa disesuaikan jika ada supplier_id di data
+        weighted_score: parseFloat(row['Weighted Score (/5)']) || 0,
+        rating_tier: row['Rating Tier'] || null,
+        evaluation_date: row['Evaluation Date'] || new Date().toISOString().split('T')[0]
+      };
+      saveSupplierEvaluationToBackend(evaluationData);
+    });
   };
 
   return (
@@ -213,7 +255,7 @@ export default function SupplierEvaluation({ changePage, onLogout }) {
                   </div>
                   <div className="pt-2 space-y-1">
                     <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Keluar
+                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
                     </button>
                   </div>
                 </div>
@@ -221,6 +263,14 @@ export default function SupplierEvaluation({ changePage, onLogout }) {
               
             </div>
           </div>
+        </div>
+        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
+          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+            Detmold Packaging
+          </h2>
+          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
+          </p>
         </div>
       </header>
 

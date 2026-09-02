@@ -97,6 +97,42 @@ export default function Suppliers({ changePage, onLogout }) {
     setEditId(null);
   };
 
+  // ✅ TAMBAHAN: Fungsi untuk POST data ke backend
+  const saveSupplierToBackend = async (supplierData) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/suppliers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          supplier_code: supplierData.supplierId,
+          name: supplierData.name,
+          phone: supplierData.phone,
+          city: supplierData.city,
+          tax_id: supplierData.taxId,
+          status: 'active'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Backend error:', errorData);
+        alert(`Error: ${errorData.error || 'Gagal menyimpan ke database'}`);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log('✅ Supplier berhasil disimpan ke database:', result);
+      alert('✅ Supplier berhasil disimpan!');
+      return true;
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      alert(`❌ Error: ${error.message}`);
+      return false;
+    }
+  };
+
   const handleSubmitEdit = (e) => {
     e.preventDefault();
     
@@ -113,6 +149,8 @@ export default function Suppliers({ changePage, onLogout }) {
           ? { ...supplier, ...formData, prefix: calculatedPrefix }
           : supplier
       ));
+      // ✅ TAMBAHAN: Kirim ke backend setelah disimpan ke localStorage
+      saveSupplierToBackend(formData);
     }
     resetForm();
   };
@@ -198,6 +236,12 @@ export default function Suppliers({ changePage, onLogout }) {
         });
 
         setSuppliers(prev => [...prev, ...newSuppliers]);
+        
+        // ✅ TAMBAHAN: POST setiap supplier ke backend
+        newSuppliers.forEach(supplier => {
+          saveSupplierToBackend(supplier);
+        });
+        
         alert(`${newSuppliers.length} supplier record(s) added successfully!`);
         
       } catch (error) {

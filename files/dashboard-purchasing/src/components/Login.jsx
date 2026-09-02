@@ -16,7 +16,7 @@ export default function Login({ onLoginSuccess }) {
   // STATE FORM REGISTER
   // =========================================================
   const [regName, setRegName] = useState('');
-  const [regIdentifier, setRegIdentifier] = useState('');
+  const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regConfirmPassword, setRegConfirmPassword] = useState('');
   const [agreeTerms, setAgreeTerms] = useState(false);
@@ -50,13 +50,11 @@ export default function Login({ onLoginSuccess }) {
     }
   };
 
-  // Bersihkan Error saat berganti halaman (Login <-> Register)
   const toggleView = () => {
     setIsLoginView(!isLoginView);
     setErrors({});
   };
 
-  // Hitung Kekuatan Password (0 - 4)
   const getPasswordStrength = (pass) => {
     let score = 0;
     if (!pass) return score;
@@ -69,78 +67,83 @@ export default function Login({ onLoginSuccess }) {
 
   const passwordStrength = getPasswordStrength(regPassword);
 
-  // Validasi Email / No HP
-  const isValidIdentifier = (value) => {
-    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-    const isPhone = /^[0-9+]{9,15}$/.test(value.replace(/[\s-]/g, ''));
-    return isEmail || isPhone;
+  const isValidEmailOnly = (value) => {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
   };
 
   // =========================================================
-  // HANDLER SUBMIT LOGIN
+  // HANDLER SUBMIT LOGIN (DENGAN JALUR KHUSUS ADMIN)
   // =========================================================
-  const handleLoginSubmit = (e) => {
+  const handleLoginSubmit = async (e) => {
     e.preventDefault();
     const newErrors = {};
 
     if (!loginIdentifier.trim()) {
-      newErrors.loginIdentifier = 'Email atau nomor telepon wajib diisi.';
-    } else if (!isValidIdentifier(loginIdentifier)) {
-      newErrors.loginIdentifier = 'Format email atau nomor HP tidak valid.';
+      newErrors.loginIdentifier = 'Email atau username wajib diisi.';
     }
-
     if (!loginPassword) {
       newErrors.loginPassword = 'Kata sandi wajib diisi.';
     }
-
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
       return;
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
+
+    // ✅ SEMUA LOGIN HARUS KE BACKEND DATABASE LARAGON
+    try {
+      const response = await fetch('http://localhost:5000/api/login', {
+        method: 'POST',
+        credentials: 'include', // ← Kirim cookies/session
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: loginIdentifier,
+          password: loginPassword,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrors({ loginPassword: data.error || 'Login gagal, periksa email & password Anda' });
+        return;
+      }
+
       if (rememberMe) {
         localStorage.setItem('rememberedUser', loginIdentifier);
       } else {
         localStorage.removeItem('rememberedUser');
       }
-      if (onLoginSuccess) onLoginSuccess({ type: 'login', identifier: loginIdentifier });
-      else alert('Login Berhasil!');
-    }, 1000);
+
+      localStorage.setItem('token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      localStorage.setItem('isLoggedIn_Ladeu', 'true');
+
+      if (onLoginSuccess) {
+        onLoginSuccess(data.user);
+      }
+    } catch (err) {
+      setErrors({ loginPassword: 'Gagal terhubung ke server backend Laragon: ' + err.message });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // =========================================================
-  // HANDLER SUBMIT REGISTER
+  // HANDLER SUBMIT REGISTER 
   // =========================================================
-  const handleRegisterSubmit = (e) => {
+  const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     const newErrors = {};
 
-    if (!regName.trim()) {
-      newErrors.regName = 'Nama lengkap wajib diisi.';
-    }
-
-    if (!regIdentifier.trim()) {
-      newErrors.regIdentifier = 'Email atau nomor telepon wajib diisi.';
-    } else if (!isValidIdentifier(regIdentifier)) {
-      newErrors.regIdentifier = 'Format email atau nomor HP tidak valid.';
-    }
-
-    if (!regPassword) {
-      newErrors.regPassword = 'Kata sandi wajib diisi.';
-    } else if (regPassword.length < 8) {
-      newErrors.regPassword = 'Kata sandi minimal 8 karakter.';
-    }
-
-    if (regConfirmPassword !== regPassword) {
-      newErrors.regConfirmPassword = 'Konfirmasi kata sandi tidak cocok.';
-    }
-
-    if (!agreeTerms) {
-      newErrors.agreeTerms = 'Kamu harus menyetujui Syarat & Ketentuan.';
-    }
+    if (!regName.trim()) newErrors.regName = 'Nama lengkap wajib diisi.';
+    if (!regEmail.trim()) newErrors.regEmail = 'Email wajib diisi.';
+    else if (!isValidEmailOnly(regEmail)) newErrors.regEmail = 'Format email tidak valid.';
+    if (!regPassword) newErrors.regPassword = 'Kata sandi wajib diisi.';
+    else if (regPassword.length < 8) newErrors.regPassword = 'Kata sandi minimal 8 karakter.';
+    if (regConfirmPassword !== regPassword) newErrors.regConfirmPassword = 'Konfirmasi kata sandi tidak cocok.';
+    if (!agreeTerms) newErrors.agreeTerms = 'Kamu harus menyetujui Syarat & Ketentuan.';
 
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
@@ -148,20 +151,40 @@ export default function Login({ onLoginSuccess }) {
     }
 
     setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      alert('Pendaftaran Berhasil! Silakan masuk dengan akun barumu.');
+
+    try {
+      const response = await fetch('http://localhost:5000/api/register', {
+        method: 'POST',
+        credentials: 'include', // ← Kirim cookies/session
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: regName,
+          email: regEmail,
+          password: regPassword,
+          role_id: 2 
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrors({ regEmail: data.error || 'Pendaftaran gagal' });
+        return;
+      }
+
+      alert('Pendaftaran Berhasil! Akun Anda terdaftar sebagai User. Silakan masuk.');
       setIsLoginView(true);
-    }, 1200);
+    } catch (err) {
+      setErrors({ regEmail: 'Gagal terhubung ke server backend: ' + err.message });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4 sm:p-6 lg:p-8">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-slate-200 p-6 sm:p-8 space-y-6">
         
-        {/* ========================================================= */}
-        {/* FORM LOGIN                                               */}
-        {/* ========================================================= */}
         {isLoginView ? (
           <>
             <div className="text-center space-y-2">
@@ -177,7 +200,7 @@ export default function Login({ onLoginSuccess }) {
             <form onSubmit={handleLoginSubmit} className="space-y-4" noValidate>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Email atau Nomor Telepon
+                  Email atau Username
                 </label>
                 <input
                   type="text"
@@ -186,7 +209,7 @@ export default function Login({ onLoginSuccess }) {
                     setLoginIdentifier(e.target.value);
                     if (errors.loginIdentifier) setErrors({ ...errors, loginIdentifier: '' });
                   }}
-                  placeholder="contoh@email.com atau 08123456789"
+                  placeholder="admin@detmoldpackaging.com"
                   className={`w-full px-4 py-3 text-sm rounded-xl border ${
                     errors.loginIdentifier ? 'border-red-500 focus:ring-red-200' : 'border-slate-200 focus:ring-red-100 focus:border-red-600'
                   } focus:outline-none focus:ring-4 transition-all bg-slate-50 focus:bg-white text-slate-900`}
@@ -267,23 +290,6 @@ export default function Login({ onLoginSuccess }) {
               </button>
             </form>
 
-            <div className="relative flex items-center justify-center my-4">
-              <div className="border-t border-slate-200 w-full"></div>
-              <span className="bg-white px-3 text-xs text-slate-400 uppercase font-semibold relative">
-                atau masuk dengan
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => alert("Google Login")} className="py-2.5 border border-slate-200 rounded-xl hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-center gap-2 transition-colors">
-                Google
-              </button>
-              <button onClick={() => alert("GitHub Login")} className="py-2.5 border border-slate-200 rounded-xl hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-center gap-2 transition-colors">
-                GitHub
-              </button>
-            </div>
-
-            {/* TOGGLE KE REGISTER */}
             <p className="text-center text-xs text-slate-500 pt-2">
               Belum punya akun?{' '}
               <button
@@ -296,9 +302,6 @@ export default function Login({ onLoginSuccess }) {
             </p>
           </>
         ) : (
-          /* ========================================================= */
-          /* FORM PENDAFTARAN (SIGN UP)                                 */
-          /* ========================================================= */
           <>
             <div className="text-center space-y-2">
               <div className="inline-flex items-center justify-center w-12 h-12 bg-red-100 text-red-600 rounded-xl mb-1">
@@ -307,14 +310,13 @@ export default function Login({ onLoginSuccess }) {
                 </svg>
               </div>
               <h2 className="text-2xl font-bold text-slate-800">Buat Akun Baru</h2>
-              <p className="text-sm text-slate-500">Lengkapi data di bawah untuk mendaftar</p>
+              <p className="text-sm text-slate-500">Lengkapi data di bawah untuk mendaftar sebagai User</p>
             </div>
 
             <form onSubmit={handleRegisterSubmit} className="space-y-4" noValidate>
-              {/* Nama Lengkap */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Nama Lengkap
+                  Nama / Username
                 </label>
                 <input
                   type="text"
@@ -323,7 +325,7 @@ export default function Login({ onLoginSuccess }) {
                     setRegName(e.target.value);
                     if (errors.regName) setErrors({ ...errors, regName: '' });
                   }}
-                  placeholder="Nama Lengkap Kamu"
+                  placeholder="Username Anda"
                   className={`w-full px-4 py-2.5 text-sm rounded-xl border ${
                     errors.regName ? 'border-red-500' : 'border-slate-200 focus:border-red-600'
                   } focus:outline-none focus:ring-4 focus:ring-red-100 bg-slate-50 focus:bg-white text-slate-900`}
@@ -331,27 +333,25 @@ export default function Login({ onLoginSuccess }) {
                 {errors.regName && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.regName}</p>}
               </div>
 
-              {/* Email / No HP */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                  Email atau Nomor Telepon
+                  Email
                 </label>
                 <input
-                  type="text"
-                  value={regIdentifier}
+                  type="email"
+                  value={regEmail}
                   onChange={(e) => {
-                    setRegIdentifier(e.target.value);
-                    if (errors.regIdentifier) setErrors({ ...errors, regIdentifier: '' });
+                    setRegEmail(e.target.value);
+                    if (errors.regEmail) setErrors({ ...errors, regEmail: '' });
                   }}
-                  placeholder="nama@email.com atau 08123456789"
+                  placeholder="nama@email.com"
                   className={`w-full px-4 py-2.5 text-sm rounded-xl border ${
-                    errors.regIdentifier ? 'border-red-500' : 'border-slate-200 focus:border-red-600'
+                    errors.regEmail ? 'border-red-500' : 'border-slate-200 focus:border-red-600'
                   } focus:outline-none focus:ring-4 focus:ring-red-100 bg-slate-50 focus:bg-white text-slate-900`}
                 />
-                {errors.regIdentifier && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.regIdentifier}</p>}
+                {errors.regEmail && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.regEmail}</p>}
               </div>
 
-              {/* Kata Sandi */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Kata Sandi
@@ -380,7 +380,6 @@ export default function Login({ onLoginSuccess }) {
                   </button>
                 </div>
 
-                {/* Password Strength Indicator */}
                 {regPassword && (
                   <div className="mt-2 space-y-1">
                     <div className="flex gap-1 h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
@@ -402,7 +401,6 @@ export default function Login({ onLoginSuccess }) {
                 {errors.regPassword && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.regPassword}</p>}
               </div>
 
-              {/* Konfirmasi Kata Sandi */}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                   Konfirmasi Kata Sandi
@@ -422,7 +420,6 @@ export default function Login({ onLoginSuccess }) {
                 {errors.regConfirmPassword && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.regConfirmPassword}</p>}
               </div>
 
-              {/* Checkbox Syarat & Ketentuan */}
               <div>
                 <label className="flex items-start gap-2.5 cursor-pointer">
                   <input
@@ -435,13 +432,12 @@ export default function Login({ onLoginSuccess }) {
                     className="w-4 h-4 mt-0.5 rounded border-slate-300 text-red-600 focus:ring-red-500"
                   />
                   <span className="text-xs text-slate-600 leading-tight">
-                    Saya menyetujui <a href="#terms" className="text-red-600 underline hover:text-red-700">Syarat & Ketentuan</a> serta <a href="#privacy" className="text-red-600 underline hover:text-red-700">Kebijakan Privasi</a>.
+                    Saya menyetujui <a href="#terms" className="text-red-600 underline hover:text-red-700">Syarat & Ketentuan</a>.
                   </span>
                 </label>
                 {errors.agreeTerms && <p className="mt-1 text-xs text-red-600 font-medium">⚠️ {errors.agreeTerms}</p>}
               </div>
 
-              {/* Tombol Submit Register */}
               <button
                 type="submit"
                 disabled={isLoading}
@@ -451,23 +447,6 @@ export default function Login({ onLoginSuccess }) {
               </button>
             </form>
 
-            <div className="relative flex items-center justify-center my-3">
-              <div className="border-t border-slate-200 w-full"></div>
-              <span className="bg-white px-3 text-xs text-slate-400 uppercase font-semibold relative">
-                atau daftar dengan
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => alert("Daftar dengan Google")} className="py-2.5 border border-slate-200 rounded-xl hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-center gap-2 transition-colors">
-                Google
-              </button>
-              <button onClick={() => alert("Daftar dengan GitHub")} className="py-2.5 border border-slate-200 rounded-xl hover:bg-slate-50 text-xs font-semibold text-slate-700 flex items-center justify-center gap-2 transition-colors">
-                GitHub
-              </button>
-            </div>
-
-            {/* TOGGLE KE LOGIN */}
             <p className="text-center text-xs text-slate-500 pt-2">
               Sudah punya akun?{' '}
               <button
@@ -493,12 +472,12 @@ export default function Login({ onLoginSuccess }) {
 
             {!resetSubmitted ? (
               <form onSubmit={(e) => { e.preventDefault(); if (resetInput) setResetSubmitted(true); }} className="space-y-4">
-                <p className="text-xs text-slate-500">Masukkan email/nomor HP Anda untuk pengiriman tautan pemulihan.</p>
+                <p className="text-xs text-slate-500">Masukkan email Anda untuk pemulihan akun.</p>
                 <input
                   type="text"
                   value={resetInput}
                   onChange={(e) => setResetInput(e.target.value)}
-                  placeholder="Email atau No HP"
+                  placeholder="Email Anda"
                   className="w-full px-3.5 py-2.5 text-sm rounded-xl border border-slate-200 focus:outline-none focus:border-red-600 focus:ring-2 focus:ring-red-100 text-slate-900"
                   required
                 />

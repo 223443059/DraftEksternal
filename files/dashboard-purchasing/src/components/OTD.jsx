@@ -81,8 +81,47 @@ export default function OTD({ changePage: propChangePage }) {
       // MENYIMPAN DATA BARU KE STATE DAN LOCAL STORAGE
       setRawData(json);
       localStorage.setItem('otdExcelData', JSON.stringify(json));
+      
+      // ✅ TAMBAHAN: POST setiap OTD record ke backend
+      json.forEach(row => {
+        saveOTDPerformanceToBackend(row);
+      });
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  // ✅ TAMBAHAN: Fungsi async untuk POST OTD Performance ke backend
+  const saveOTDPerformanceToBackend = async (otdData) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/otd-performance', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          po_number: otdData['PO Number'] || otdData['po_number'] || '',
+          supplier_name: otdData['Supplier'] || otdData['supplier_name'] || '',
+          category: otdData['Category'] || otdData['category'] || null,
+          delivery_status: otdData['On-Time?'] === 'Yes' ? 'On-Time' : 'Late',
+          cycle_time_days: parseFloat(otdData['Cycle Time (Days)']) || 0,
+          spend_impact: parseFloat(otdData['Approved Amount (US$)']) || 0,
+          record_date: otdData['Order Date'] || otdData['record_date'] || new Date().toISOString().split('T')[0]
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Backend error:', errorData);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log('✅ OTD Performance berhasil disimpan ke database:', result);
+      return true;
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      return false;
+    }
   };
 
   // -------------------------------------------------------------

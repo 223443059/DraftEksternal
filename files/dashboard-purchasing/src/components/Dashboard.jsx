@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { getCurrentUser } from '../utils/authUtils'; 
+import CreateUser from './CreateUser';
 
-// === KURS KONVERSI (Silakan sesuaikan nilai kurs jika diperlukan) ===
+// === KURS KONVERSI ===
 const KURS_IDR_TO_USD = 15500;
 
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
@@ -8,8 +10,15 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [orders, setOrders] = useState([]);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showPendingModal, setShowPendingModal] = useState(false);
-  const [selectedYear, setSelectedYear] = useState('All'); // State untuk filter tahun
-  
+  const [selectedYear, setSelectedYear] = useState('All'); 
+
+  // Ambil data user dari utility
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    setUser(getCurrentUser());
+  }, []);
+
   const [supplierTab, setSupplierTab] = useState('top20'); 
   
   // Dark/Light Mode State
@@ -23,11 +32,34 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   // State untuk Bar Chart Drill-down
   const [barChartGroup, setBarChartGroup] = useState(null); 
 
-  // Profile & Notification State
-  const [profile] = useState({ name: 'Admin', email: 'admin@detpak.com', role: 'Administrator' });
+  // Profile Fallback & Notification State
+  const [profile] = useState({ name: 'Admin', email: 'admin@detmoldpackaging.com', role: 'Administrator' });
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [hasNotif, setHasNotif] = useState(true);
   const profileRef = useRef(null);
+
+  // === AMBIL DATA USER DARI LOCALSTORAGE UNTUK CEK ROLE SUPER ADMIN ===
+  const currentUser = useMemo(() => {
+    try {
+      const savedUser = localStorage.getItem('user');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (e) {
+      console.error('Failed to parse user from localStorage', e);
+      return null;
+    }
+  }, []);
+
+  // Super Admin check: id_role 1 atau string 'Super Admin' / 'Administrator'
+  const isSuperAdmin = useMemo(() => {
+    const activeUser = user || currentUser;
+    if (!activeUser) return true; // Default fallback jika belum di-set
+    return (
+      activeUser.role_id === 1 ||
+      activeUser.role === 'Super Admin' ||
+      activeUser.role === 'Administrator' ||
+      profile.role === 'Administrator'
+    );
+  }, [currentUser, profile, user]);
 
   // Real-time Clock for Header
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -173,7 +205,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return 'Other';
   };
 
-  // Mengambil daftar tahun yang tersedia dari data ALL orders untuk opsi dropdown
   const availableYears = useMemo(() => {
     const years = new Set();
     orders.forEach((o) => {
@@ -188,7 +219,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return ['All', ...Array.from(years).sort((a, b) => b - a)];
   }, [orders]);
 
-  // === FILTER MASTER BEDASARKAN TAHUN ===
   const yearFilteredOrders = useMemo(() => {
     if (selectedYear === 'All') return orders;
     return orders.filter((o) => {
@@ -201,7 +231,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     });
   }, [orders, selectedYear]);
 
-  // Menghitung total cost menggunakan data yang sudah terfilter tahun
   const filteredTotalCost = useMemo(() => {
     return yearFilteredOrders.reduce((sum, o) => sum + getOrderTotal(o), 0);
   }, [yearFilteredOrders]);
@@ -544,20 +573,17 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     );
   };
 
-  // === DATA UNTUK BAR CHART DRILL-DOWN ===
   const barChartData = useMemo(() => {
     const catMap = {};
     let maxVal = 0;
 
     if (!barChartGroup) {
-      // Tampilan Awal: Induk (Direct / Indirect / Other)
       yearFilteredOrders.forEach((order) => {
         const cat = getParentCategory(normalizeCategory(getOrderCategory(order)));
         const cost = getOrderTotal(order);
         catMap[cat] = (catMap[cat] || 0) + cost;
       });
     } else {
-      // Saat Diklik: Menampilkan Top 10 Barang berdasarkan kategori
       yearFilteredOrders.forEach((order) => {
         const cat = getParentCategory(normalizeCategory(getOrderCategory(order)));
         if (cat === barChartGroup && Array.isArray(order.items)) {
@@ -576,7 +602,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     const categories = Object.keys(catMap)
       .filter(key => catMap[key] > 0)
       .sort((a, b) => catMap[b] - catMap[a])
-      .slice(0, 10) // Hanya ambil 10 teratas
+      .slice(0, 10)
       .map(catName => ({
         name: catName,
         value: catMap[catName]
@@ -588,7 +614,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return { categories, maxVal };
   }, [yearFilteredOrders, barChartGroup]);
 
-  // === RENDER GRAFIK BATANG HORIZONTAL TOP 10 SPEND BY CATEGORY ===
   const renderCategoryBarChart = () => {
     const { categories: top10Categories, maxVal } = barChartData; 
     const barColors = ['#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#FECACA', '#FCA5A5', '#F87171', '#EF4444', '#DC2626', '#B91C1C'];
@@ -700,11 +725,10 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
             
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')}className="bg-[#E31837] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
+              <button onClick={() => changePage?.('dashboard')} className="bg-[#E31837] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
               <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
               <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-        
             </nav>
           </div>
 
@@ -724,19 +748,19 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
             <div className="relative" ref={profileRef}>
               <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
-                Admin <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+                {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
               
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                     <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      AD
+                      {(user?.username || 'AD').substring(0, 2).toUpperCase()}
                     </div>
                     <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{profile.name}</h4>
-                      <p className="text-sm text-gray-400 truncate">{profile.email}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{profile.role}</span>
+                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || 'Admin'}</h4>
+                      <p className="text-sm text-gray-400 truncate">{user?.email || 'admin@detmoldpackaging.com'}</p>
+                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || 'Administrator'}</span>
                     </div>
                   </div>
                   <div className="pt-2 space-y-1">
@@ -765,6 +789,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       
       {/* BODY */}
       <div className="flex flex-1 overflow-hidden">
+        
+        {/* === SIDEBAR === */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
           <nav className="flex flex-col gap-2 px-4">
             <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white bg-[#E31837] rounded-xl transition-colors text-left cursor-pointer shadow-xs">
@@ -785,6 +811,21 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
+
+            {/* MENU USER MANAGEMENT KHUSUS SUPER ADMIN */}
+            {isSuperAdmin && (
+              <button 
+                onClick={() => changePage && changePage('userManagement')} 
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${
+                  activePage === 'userManagement' 
+                    ? 'bg-[#E31837] text-white font-bold' 
+                    : 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300'
+                }`}
+              >
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+              </button>
+            )}
+
           </nav>
         </aside>
 
@@ -794,6 +835,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Dashboard Overview</h1>
             <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Expenditure analysis and order origin monitoring (Lokal vs Impor).</p>
           </div>
+
+          {/* Form Create User Khusus Super Admin */}
+          {isSuperAdmin && (
+            <CreateUser />
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             
@@ -806,7 +852,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                 <div className="flex items-center gap-2 mb-0.5">
                   <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
                   
-                  {/* Select yang Mengontrol Keseluruhan Dashboard */}
                   <select 
                     value={selectedYear}
                     onChange={(e) => setSelectedYear(e.target.value)}

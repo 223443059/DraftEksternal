@@ -348,10 +348,87 @@ export default function MarketPrice({ changePage, onLogout }) {
             })
           }
         }));
+        
+        // ✅ TAMBAHAN: POST setiap market price ke backend
+        data.forEach(row => {
+          const changePercent = parseFloat(row.change || row.Change || row['Change %'] || row['Perubahan%']) || 0;
+          const recordedDate = row.date || row.Date || row['Tanggal'] || new Date().toISOString().split('T')[0];
+          
+          saveMarketPriceToBackend({
+            item_name: selectedKey,
+            price: parseNumber(row.price || row.Price || row['Terakhir']),
+            unit: 'USD',
+            change_percent: changePercent,
+            recorded_date: recordedDate
+          });
+        });
       }
     };
     reader.readAsBinaryString(file);
     e.target.value = null; 
+  };
+
+  // ✅ TAMBAHAN: Fungsi async untuk POST Market Price ke backend
+  const saveMarketPriceToBackend = async (priceData) => {
+    try {
+      // ✅ Helper: Konversi berbagai format tanggal ke YYYY-MM-DD
+      const formatDateToYYYYMMDD = (dateInput) => {
+        if (!dateInput) return new Date().toISOString().split('T')[0];
+        
+        // Jika sudah string YYYY-MM-DD, return as is
+        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+          return dateInput;
+        }
+        
+        // Jika ISO datetime string (2025-06-30T16:59:48.000Z)
+        if (typeof dateInput === 'string' && dateInput.includes('T')) {
+          return dateInput.split('T')[0];
+        }
+        
+        // Jika Date object
+        if (dateInput instanceof Date) {
+          return dateInput.toISOString().split('T')[0];
+        }
+        
+        // Jika string format lain, coba parse
+        if (typeof dateInput === 'string') {
+          const date = new Date(dateInput);
+          if (!isNaN(date)) {
+            return date.toISOString().split('T')[0];
+          }
+        }
+        
+        // Default: hari ini
+        return new Date().toISOString().split('T')[0];
+      };
+
+      const response = await fetch('http://localhost:5000/api/market-prices', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          item_name: priceData.item_name || 'Unknown',
+          price: priceData.price || 0,
+          unit: priceData.unit || 'USD',
+          change_percent: priceData.change_percent || 0,
+          recorded_date: formatDateToYYYYMMDD(priceData.recorded_date)
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Backend error:', errorData);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log('✅ Market Price berhasil disimpan ke database:', result);
+      return true;
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      return false;
+    }
   };
 
   useEffect(() => {

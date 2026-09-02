@@ -354,6 +354,11 @@ export default function PurchaseOrders({
       setOrders(updatedOrders);
       localStorage.setItem('dataPO_Ladeu', JSON.stringify(updatedOrders));
       
+      // ✅ TAMBAHAN: POST setiap PO yang diimpor ke backend
+      newImportedOrders.forEach(po => {
+        savePurchaseOrderToBackend(po);
+      });
+      
       alert('Data Excel berhasil diimpor!');
       e.target.value = null;
     };
@@ -410,7 +415,41 @@ export default function PurchaseOrders({
   };
 
   // === SAVE MODAL ===
-  const handleSaveModal = (e) => {
+  // ✅ TAMBAHAN: Fungsi async untuk POST Purchase Order ke backend
+  const savePurchaseOrderToBackend = async (poData) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/purchase-orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          po_number: poData.poNumber,
+          supplier_id: 1,
+          po_date: poData.date,
+          total_amount: poData.totalCost || 0,
+          status: poData.status || 'pending',
+          category: poData.category,
+          description: poData.notes
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Backend error:', errorData);
+        return false;
+      }
+
+      const result = await response.json();
+      console.log('✅ Purchase Order berhasil disimpan ke database:', result);
+      return true;
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      return false;
+    }
+  };
+
+  const handleSaveModal = async (e) => {
     e.preventDefault();
     const poNumStr = formData.poNumber.startsWith('PO-') ? formData.poNumber : `PO-${formData.poNumber}`;
     const commonData = {
@@ -452,6 +491,9 @@ export default function PurchaseOrders({
       const updated = orders.map(o => o.id === editingId ? { ...o, ...commonData } : o);
       setOrders(updated);
       localStorage.setItem('dataPO_Ladeu', JSON.stringify(updated));
+      
+      // ✅ TAMBAHAN: POST ke backend setelah disimpan ke localStorage
+      await savePurchaseOrderToBackend(commonData);
     }
     setIsModalOpen(false);
   };
