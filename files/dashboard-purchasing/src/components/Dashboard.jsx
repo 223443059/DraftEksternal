@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { getCurrentUser } from '../utils/authUtils'; 
-import CreateUser from './CreateUser';
+import { useRole } from '../context/RoleContext';
+import { useTheme } from '../hooks/useTheme';
 
 // === KURS KONVERSI ===
 const KURS_IDR_TO_USD = 15500;
@@ -19,10 +20,14 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     setUser(getCurrentUser());
   }, []);
 
+  // Cek permission manage_users dari RoleContext
+  const { hasPermission } = useRole();
+  const canManageUsers = hasPermission('manage_users');
+
   const [supplierTab, setSupplierTab] = useState('top20'); 
   
-  // Dark/Light Mode State
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  // Dark/Light Mode State (Sinkron otomatis dengan hook useTheme & localStorage)
+  const [isDarkMode, setIsDarkMode] = useTheme();
 
   // Drill-down 3 Level State (Pie Chart)
   const [drillLevel, setDrillLevel] = useState(0); 
@@ -37,29 +42,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [hasNotif, setHasNotif] = useState(true);
   const profileRef = useRef(null);
-
-  // === AMBIL DATA USER DARI LOCALSTORAGE UNTUK CEK ROLE SUPER ADMIN ===
-  const currentUser = useMemo(() => {
-    try {
-      const savedUser = localStorage.getItem('user');
-      return savedUser ? JSON.parse(savedUser) : null;
-    } catch (e) {
-      console.error('Failed to parse user from localStorage', e);
-      return null;
-    }
-  }, []);
-
-  // Super Admin check: id_role 1 atau string 'Super Admin' / 'Administrator'
-  const isSuperAdmin = useMemo(() => {
-    const activeUser = user || currentUser;
-    if (!activeUser) return true; // Default fallback jika belum di-set
-    return (
-      activeUser.role_id === 1 ||
-      activeUser.role === 'Super Admin' ||
-      activeUser.role === 'Administrator' ||
-      profile.role === 'Administrator'
-    );
-  }, [currentUser, profile, user]);
 
   // Real-time Clock for Header
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -531,7 +513,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   className={`transition-all duration-200 hover:opacity-85 ${isClickable ? 'cursor-pointer hover:-translate-y-1' : ''}`}
                   onClick={() => handleSliceClick(slice.name)}
                 />
-              )
+              );
             })}
 
             {slices.map((slice, i) => (
@@ -712,7 +694,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   return (
-   <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
       
       {/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
@@ -813,7 +795,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </button>
 
             {/* MENU USER MANAGEMENT KHUSUS SUPER ADMIN */}
-            {isSuperAdmin && (
+            {canManageUsers && (
               <button 
                 onClick={() => changePage && changePage('userManagement')} 
                 className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${
@@ -835,11 +817,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Dashboard Overview</h1>
             <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Expenditure analysis and order origin monitoring (Lokal vs Impor).</p>
           </div>
-
-          {/* Form Create User Khusus Super Admin */}
-          {isSuperAdmin && (
-            <CreateUser />
-          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
             

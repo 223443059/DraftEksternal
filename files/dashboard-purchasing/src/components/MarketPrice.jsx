@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import { useRole } from '../context/RoleContext';
 
 // === KOMPONEN GRAFIK TREN HARGA (SVG Dynamic Chart) ===
 function CommodityChart({ history, isDarkMode, unit }) {
@@ -238,7 +239,9 @@ const defaultCommodities = {
 };
 
 export default function MarketPrice({ changePage, onLogout }) {
-  const [profile] = useState({ name: 'Admin', email: 'admin@detpak.com', role: 'Administrator' });
+  const { hasPermission, user } = useRole();
+  const canManageUsers = hasPermission('manage_users');
+  // profile lama dihapus (hardcode) - sekarang pakai `user` dari RoleContext
   const [showProfileCard, setShowProfileCard] = useState(false);
   const profileRef = useRef(null);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -525,19 +528,19 @@ export default function MarketPrice({ changePage, onLogout }) {
 
             <div className="relative" ref={profileRef}>
               <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
-                Admin <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+                {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
               
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                     <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      AD
+                      {(user?.username || 'AD').slice(0, 2)}
                     </div>
                     <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{profile.name}</h4>
-                      <p className="text-sm text-gray-400 truncate">{profile.email}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{profile.role}</span>
+                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || '-'}</h4>
+                      <p className="text-sm text-gray-400 truncate">{user?.email || '-'}</p>
+                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || '-'}</span>
                     </div>
                   </div>
                   <div className="pt-2 space-y-1">
@@ -586,6 +589,12 @@ export default function MarketPrice({ changePage, onLogout }) {
             <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
+
+            {canManageUsers && (
+              <button onClick={() => changePage && changePage('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+              </button>
+            )}
           </nav>
         </aside>
 

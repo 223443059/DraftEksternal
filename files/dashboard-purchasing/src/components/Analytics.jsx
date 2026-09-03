@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useRole } from '../context/RoleContext';
 
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
 const EXCHANGE_RATE_IDR_TO_USD = 16000; // 1 USD = Rp 16.000 (dapat disesuaikan)
@@ -105,6 +106,9 @@ const generateRoundedBar = (x, y, w, h, r) => {
 };
 
 export default function Analytics({ changePage, onLogout }) {
+  const { hasPermission } = useRole();
+  const canManageUsers = hasPermission('manage_users');
+
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
   const [showProfileCard, setShowProfileCard] = useState(false);
@@ -444,6 +448,12 @@ export default function Analytics({ changePage, onLogout }) {
             <button onClick={() => handleNavigate('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
+
+            {canManageUsers && (
+              <button onClick={() => handleNavigate('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+              </button>
+            )}
           </nav>
         </aside>
 

@@ -1,0 +1,387 @@
+const express = require('express');
+const mysql = require('mysql2');
+const cors = require('cors');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
+const app = express();
+
+// Middleware
+app.use(cors({
+  origin: 'http://localhost:5173',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Secret Key JWT
+const SECRET_KEY = 'your-secret-key-change-in-production';
+
+// =================================================================
+// 1. KONEKSI DATABASE
+// =================================================================
+const db = mysql.createConnection({
+  host: 'localhost',
+  user: 'root',
+  password: '',
+  database: 'purchasing_db',
+  port: 3306
+});
+
+db.connect((err) => {
+  if (err) {
+    console.error('❌ Koneksi ke MySQL Laragon Gagal:', err);
+  } else {
+    console.log('✅ Terhubung ke Database MySQL Laragon!');
+  }
+});
+
+// Export db untuk digunakan di routes
+module.exports = db;
+
+// =================================================================
+// 2. AUTH MIDDLEWARE
+// =================================================================
+const generateToken = (user) => {
+  return jwt.sign(
+    {
+      id: user.id,
+      email: user.email,
+      role_id: user.role_id,
+    },
+    SECRET_KEY,
+    { expiresIn: '7d' }
+  );
+};
+
+const verifyToken = (token) => {
+  try {
+    return jwt.verify(token, SECRET_KEY);
+  } catch (error) {
+    return null;
+  }
+};
+
+const authenticate = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ message: 'No token provided' });
+  }
+
+  const decoded = verifyToken(token);
+  if (!decoded) {
+    return res.status(401).json({ message: 'Invalid or expired token' });
+  }
+
+  req.user = decoded;
+  next();
+};
+
+const authorize = (requiredPermissions) => {
+  return (req, res, next) => {
+    const query = `
+      SELECT GROUP_CONCAT(p.name) as permissions
+      FROM users u
+      LEFT JOIN role_permissions rp ON u.role_id = rp.role_id
+      LEFT JOIN permissions p ON rp.permission_id = p.id
+      WHERE u.id = ?
+      GROUP BY u.id
+    `;
+
+    db.query(query, [req.user.id], (err, results) => {
+      if (err || !results.length) {
+        return res.status(403).json({ message: 'Access denied - no permissions found' });
+      }
+
+      const userPermissions = results[0].permissions ? results[0].permissions.split(',') : [];
+      const hasPermission = requiredPermissions.some(perm => userPermissions.includes(perm));
+
+      if (!hasPermission) {
+        return res.status(403).json({ 
+          message: 'Insufficient permissions',
+          required: requiredPermissions,
+          has: userPermissions 
+        });
+      }
+
+      next();
+    });
+  };
+};
+
+// =================================================================
+// 3. TEST ROUTES
+// =================================================================
+
+app.get('/api/test', (req, res) => {
+  res.json({ message: 'Server is running' });
+});
+
+// =================================================================
+// 4. AUTH ROUTES (PUBLIC)
+// =================================================================
+
+// LOGIN
+app.post('/api/users/login', (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password are required' });
+  }
+
+  const query = 'SELECT * FROM users WHERE email = ?';
+  db.query(query, [email], (err, results) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+
+    if (!results.length) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    const user = results[0];
+    const passwordMatch = bcrypt.compareSync(password, user.password);
+
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Invalid email or password' });
+    }
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      message: 'Login successful',
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role_id: user.role_id
+      }
+    });
+  });
+});
+
+// SETUP ADMIN
+app.post('/api/users/setup-admin', async (req, res) => {
+  try {
+    const email = 'admin@detmoldpackaging.com';
+    const username = 'admin';
+    const password = 'Kanayakan_21';
+    const hashedPassword = bcrypt.hashSync(password, 10);
+
+    db.query('SELECT id FROM users WHERE email = ?', [email], (err, results) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error', error: err });
+      }
+
+      if (results.length > 0) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Admin user already exists',
+          email: email 
+        });
+      }
+
+      db.query(
+        'INSERT INTO users (username, email, password, role_id) VALUES (?, ?, ?, 1)',
+        [username, email, hashedPassword],
+        (err, result) => {
+          if (err) {
+            return res.status(500).json({ message: 'Failed to create admin', error: err });
+          }
+
+          res.status(201).json({ 
+            success: true,
+            message: 'Admin user created successfully!',
+            username: username,
+            email: email,
+            password: password,
+            userId: result.insertId,
+            warning: '⚠️ Change this password immediately in production!'
+          });
+        }
+      );
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// =================================================================
+// 5. PROTECTED ROUTES (REQUIRE AUTH)
+// =================================================================
+
+// Get user profile
+app.get('/api/users/profile', authenticate, (req, res) => {
+  const query = `
+    SELECT u.id, u.email, u.username, u.role_id, r.name as role, GROUP_CONCAT(p.name) as permissions
+    FROM users u
+    LEFT JOIN roles r ON u.role_id = r.id
+    LEFT JOIN role_permissions rp ON u.role_id = rp.role_id
+    LEFT JOIN permissions p ON rp.permission_id = p.id
+    WHERE u.id = ?
+    GROUP BY u.id
+  `;
+
+  db.query(query, [req.user.id], (err, results) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    
+    if (!results.length) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = results[0];
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        role_id: user.role_id,
+        role: user.role
+      },
+      permissions: user.permissions ? user.permissions.split(',').map(p => p.trim()) : []
+    });
+  });
+});
+
+// =================================================================
+// 6. USER MANAGEMENT ROUTES (SUPER ADMIN ONLY)
+// =================================================================
+
+// Get all users
+app.get('/api/users/all', authenticate, authorize(['manage_users']), (req, res) => {
+  const query = `
+    SELECT u.id, u.username, u.email, u.created_at, r.name as role
+    FROM users u
+    LEFT JOIN roles r ON u.role_id = r.id
+    ORDER BY u.created_at DESC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    res.json({ success: true, data: results });
+  });
+});
+
+// Create user
+app.post('/api/users/create', authenticate, authorize(['manage_users']), (req, res) => {
+  const { username, email, password, role_id } = req.body;
+
+  if (!username || !email || !password || !role_id) {
+    return res.status(400).json({ message: 'Username, email, password, and role are required' });
+  }
+
+  db.query('SELECT id FROM users WHERE email = ? OR username = ?', [email, username], (err, results) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    
+    if (results.length > 0) {
+      return res.status(400).json({ message: 'Email or username already exists' });
+    }
+
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    const query = 'INSERT INTO users (username, email, password, role_id) VALUES (?, ?, ?, ?)';
+
+    db.query(query, [username, email, hashedPassword, role_id], (err, result) => {
+      if (err) {
+        return res.status(500).json({ message: 'Database error', error: err });
+      }
+
+      res.status(201).json({ 
+        success: true, 
+        message: 'User created successfully',
+        userId: result.insertId 
+      });
+    });
+  });
+});
+
+// Update user role
+app.put('/api/users/update-role', authenticate, authorize(['manage_users']), (req, res) => {
+  const { userId, role_id } = req.body;
+
+  if (!userId || !role_id) {
+    return res.status(400).json({ message: 'userId and role_id are required' });
+  }
+
+  db.query('UPDATE users SET role_id = ? WHERE id = ?', [role_id, userId], (err) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    res.json({ success: true, message: 'User role updated' });
+  });
+});
+
+// Reset password
+app.put('/api/users/reset-password', authenticate, authorize(['manage_users']), (req, res) => {
+  const { userId, newPassword } = req.body;
+
+  if (!userId || !newPassword) {
+    return res.status(400).json({ message: 'userId and newPassword are required' });
+  }
+
+  const hashedPassword = bcrypt.hashSync(newPassword, 10);
+  db.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, userId], (err) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    res.json({ success: true, message: 'Password reset successfully' });
+  });
+});
+
+// Delete user
+app.delete('/api/users/delete', authenticate, authorize(['manage_users']), (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ message: 'userId is required' });
+  }
+
+  db.query('DELETE FROM users WHERE id = ?', [userId], (err) => {
+    if (err) return res.status(500).json({ message: 'Database error' });
+    res.json({ success: true, message: 'User deleted successfully' });
+  });
+});
+
+// =================================================================
+// 7. LEGACY ROUTES (untuk backward compatibility)
+// =================================================================
+
+// Old login endpoint untuk backward compatibility
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  const sql = `SELECT u.*, r.name as role_name FROM users u JOIN roles r ON u.role_id = r.id WHERE (u.username = ? OR u.email = ?) AND u.status = 'active'`;
+
+  db.query(sql, [username, username], (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (results.length === 0) return res.status(401).json({ error: 'Username atau password salah / akun tidak aktif' });
+    
+    const user = results[0];
+    
+    bcrypt.compare(password, user.password, (err, isMatch) => {
+      if (!isMatch) return res.status(401).json({ error: 'Username atau password salah' });
+      
+      const token = jwt.sign(
+        { id: user.id, username: user.username, role: user.role_name, roleId: user.role_id },
+        SECRET_KEY,
+        { expiresIn: '24h' }
+      );
+      
+      res.json({ message: 'Login berhasil', token, user: { id: user.id, username: user.username, email: user.email, role: user.role_name }});
+    });
+  });
+});
+
+// Get all users (legacy)
+app.get('/api/users', authenticate, (req, res) => {
+  const sql = `SELECT u.id, u.username, u.email, u.status, u.role_id, r.name as role FROM users u JOIN roles r ON u.role_id = r.id`;
+  db.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(results);
+  });
+});
+
+// =================================================================
+// 8. START SERVER
+// =================================================================
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server Backend berjalan di http://localhost:${PORT}`);
+});

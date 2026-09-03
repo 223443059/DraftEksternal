@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useRole } from '../context/RoleContext';
 
 export default function Report({ changePage, onLogout }) {
+  const { hasPermission } = useRole();
+  const canManageUsers = hasPermission('manage_users');
+
   // === EXCHANGE RATE SETTING ===
   const EXCHANGE_RATE = 15500;
 
@@ -339,6 +343,15 @@ export default function Report({ changePage, onLogout }) {
             >
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
+
+            {canManageUsers && (
+              <button
+                onClick={() => changePage && changePage('userManagement')}
+                className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer"
+              >
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+              </button>
+            )}
           </nav>
         </aside>
 

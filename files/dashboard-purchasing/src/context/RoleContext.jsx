@@ -1,62 +1,85 @@
-// src/context/RoleContext.jsx
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
 
-const RoleContext = createContext();
+const RoleContext = createContext(null);
 
-export const RoleProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [permissions, setPermissions] = useState([]);
+// Sesuai users.js: prefix route users kamu (mount path di server.js/index.js).
+// Pakai URL absolut ke backend Express, biar nggak nyasar ke dev server frontend
+// kalau frontend & backend jalan di port berbeda tanpa proxy.
+const API_BASE = 'http://localhost:5000/api/users';
+
+export function RoleProvider({ children }) {
+  const [user, setUser] = useState(null); // { id, email, username, role_id, role }
+  const [permissions, setPermissions] = useState([]); // dari role_permissions, contoh: ['manage_users']
   const [loading, setLoading] = useState(true);
 
+  // Ambil profile + permissions dari server (bukan decode JWT), karena
+  // permission-nya dinamis dari tabel role_permissions, bukan hardcode.
+  const fetchProfile = async (token) => {
+    try {
+      const res = await fetch(`${API_BASE}/profile`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Token tidak valid atau sudah expired');
+      const data = await res.json();
+      setUser(data.user);
+      setPermissions(data.permissions || []);
+      return true;
+    } catch (err) {
+      localStorage.removeItem('token');
+      setUser(null);
+      setPermissions([]);
+      return false;
+    }
+  };
+
   useEffect(() => {
-    const fetchUserData = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        if (!token) {
-          setLoading(false);
-          return;
-        }
-
-        const response = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setUser(data.user);
-          setPermissions(data.permissions || []);
-        }
-      } catch (error) {
-        console.error('Error fetching user data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchUserData();
+    const token = localStorage.getItem('token');
+    if (token) {
+      fetchProfile(token).finally(() => setLoading(false));
+    } else {
+      setLoading(false);
+    }
   }, []);
 
-  const hasPermission = (permission) => {
-    return permissions.includes(permission);
+  // Panggil ini setelah POST /login sukses, dengan token dari response-nya
+  const login = async (token) => {
+    localStorage.setItem('token', token);
+    const ok = await fetchProfile(token);
+    if (!ok) localStorage.removeItem('token');
+    return ok;
   };
 
-  const isSuperAdmin = () => {
-    return user?.role_id === 1;
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('isLoggedIn_Ladeu');
+    setUser(null);
+    setPermissions([]);
   };
 
-  return (
-    <RoleContext.Provider value={{ user, permissions, loading, hasPermission, isSuperAdmin }}>
-      {children}
-    </RoleContext.Provider>
-  );
-};
+  const hasPermission = (permission) => permissions.includes(permission);
 
-export const useRole = () => {
-  const context = useContext(RoleContext);
-  if (!context) {
-    throw new Error('useRole must be used within RoleProvider');
+  // Semua route CRUD user di backend digerbang oleh satu permission: 'manage_users'
+  const isAdmin = () => hasPermission('manage_users');
+
+  const value = {
+    user,
+    permissions,
+    loading,
+    login,
+    logout,
+    logoutUser: logout, // alias, dipakai oleh Navbar.jsx
+    hasPermission,
+    isAdmin,
+  };
+
+  return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;
+}
+
+export function useRole() {
+  const ctx = useContext(RoleContext);
+  if (!ctx) {
+    throw new Error('useRole harus dipakai di dalam RoleProvider');
   }
-  return context;
-};
+  return ctx;
+}

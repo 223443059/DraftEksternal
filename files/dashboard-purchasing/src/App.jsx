@@ -12,27 +12,13 @@ import MarketPrice from "./components/MarketPrice.jsx";
 import OTD from "./components/OTD.jsx";
 import UserManagement from "./components/UserManagement.jsx";
 import Navbar from './components/Navbar.jsx';
-
-// 1. TAMBAHKAN IMPORT ROLE PROVIDER DI SINI
-import { RoleProvider } from './context/RoleContext';
+import { RoleProvider, useRole } from './context/RoleContext';
 
 const DEFAULT_INITIAL_ORDERS = [];
 
-export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(() => {
-    return localStorage.getItem('isLoggedIn_Ladeu') === 'true';
-  });
-
-  const [currentUser, setCurrentUser] = useState(() => {
-    try {
-      const savedUser = localStorage.getItem('user');
-      return savedUser ? JSON.parse(savedUser) : null;
-    } catch (error) {
-      console.error("Gagal membaca data user:", error);
-      return null;
-    }
-  });
-
+// INNER COMPONENT - untuk menggunakan useRole hook
+function AppContent() {
+  const { isAdmin, hasPermission } = useRole();
   const [activePage, setActivePage] = useState('dashboard');
 
   const [orders, setOrders] = useState(() => {
@@ -45,6 +31,20 @@ export default function App() {
       console.error("Gagal memuat data PO:", error);
       return DEFAULT_INITIAL_ORDERS;
     }
+  });
+
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const savedUser = localStorage.getItem('user');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (error) {
+      console.error("Gagal membaca data user:", error);
+      return null;
+    }
+  });
+
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    return localStorage.getItem('isLoggedIn_Ladeu') === 'true';
   });
 
   useEffect(() => {
@@ -73,6 +73,7 @@ export default function App() {
     setIsLoggedIn(false);
     setCurrentUser(null);
     setActivePage('dashboard'); 
+    window.location.reload();
   };
 
   if (!isLoggedIn) {
@@ -109,20 +110,29 @@ export default function App() {
         return <OTD changePage={setActivePage} onLogout={handleLogout} />;
       
       case 'userManagement': {
-        // Proteksi Halaman User Management
-        const role = (currentUser?.role || '').toLowerCase();
-        const roleId = currentUser?.role_id || currentUser?.id_role;
-        const isAdminUser = role === 'admin' || role === 'super admin' || role === 'administrator' || roleId === 1;
-
-        if (isAdminUser) {
+        // Proteksi dengan RoleContext
+        if (hasPermission('manage_users')) {
           return <UserManagement changePage={setActivePage} onLogout={handleLogout} />;
         } else {
           return (
             <div style={{ textAlign: 'center', padding: '50px', color: '#ffffff' }}>
-              <h2>Akses Ditolak 🛑</h2>
+              <h2>❌ Akses Ditolak</h2>
               <p>Anda tidak memiliki izin untuk melihat halaman User Management.</p>
-              <button onClick={() => setActivePage('dashboard')} style={{ padding: '10px 20px', marginTop: '15px', cursor: 'pointer' }}>
-                Kembali ke Dashboard
+              <button 
+                onClick={() => setActivePage('dashboard')} 
+                style={{ 
+                  padding: '10px 20px', 
+                  marginTop: '15px', 
+                  cursor: 'pointer',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '1rem',
+                  fontWeight: '600'
+                }}
+              >
+                ← Kembali ke Dashboard
               </button>
             </div>
           );
@@ -136,15 +146,25 @@ export default function App() {
   };
 
   return (
-    // 2. BUNGKUS APLIKASI DENGAN ROLE PROVIDER DI SINI
-    <RoleProvider>
+    <>
       <Navbar 
         activePage={activePage} 
         setActivePage={setActivePage} 
         currentUser={currentUser} 
         onLogout={handleLogout}
+        isAdmin={isAdmin()}
+        hasPermission={hasPermission}
       />
       {renderContent()}
+    </>
+  );
+}
+
+// OUTER COMPONENT - Wrap dengan RoleProvider
+export default function App() {
+  return (
+    <RoleProvider>
+      <AppContent />
     </RoleProvider>
   );
 }

@@ -4,6 +4,7 @@ import {
   LineChart, Line, PieChart, Pie, Cell
 } from 'recharts';
 import * as XLSX from 'xlsx';
+import { useRole } from '../context/RoleContext';
 
 const COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6'];
 
@@ -18,7 +19,17 @@ const KPICard = ({ title, value, color = '#3b82f6' }) => (
 const formatCurrency = (num) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num || 0);
 const formatPercent = (num) => `${(num || 0).toFixed(1)}%`;
 
-export default function OTD({ changePage: propChangePage }) {
+// Fungsi helper untuk mendapatkan inisial nama
+const getInitials = (name) => {
+  if (!name) return 'U';
+  const parts = name.split(' ');
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.substring(0, 2).toUpperCase();
+};
+
+export default function OTD({ changePage: propChangePage, onLogout }) {
+  const { hasPermission, user } = useRole();
+  const canManageUsers = hasPermission('manage_users');
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [activePage, setActivePage] = useState('otd');
@@ -32,12 +43,6 @@ export default function OTD({ changePage: propChangePage }) {
   
   const profileRef = useRef(null);
   const fileInputRef = useRef(null);
-
-  const profile = {
-    name: 'Admin User',
-    email: 'admin@detpak.com',
-    role: 'Administrator',
-  };
 
   const changePage = propChangePage || ((page) => setActivePage(page));
 
@@ -60,7 +65,9 @@ export default function OTD({ changePage: propChangePage }) {
   }, []);
 
   const handleLogout = () => {
-    alert('Logged out successfully');
+    if (typeof onLogout === 'function') {
+      onLogout();
+    }
   };
 
   // -------------------------------------------------------------
@@ -82,7 +89,7 @@ export default function OTD({ changePage: propChangePage }) {
       setRawData(json);
       localStorage.setItem('otdExcelData', JSON.stringify(json));
       
-      // ✅ TAMBAHAN: POST setiap OTD record ke backend
+      // POST setiap OTD record ke backend
       json.forEach(row => {
         saveOTDPerformanceToBackend(row);
       });
@@ -90,7 +97,7 @@ export default function OTD({ changePage: propChangePage }) {
     reader.readAsArrayBuffer(file);
   };
 
-  // ✅ TAMBAHAN: Fungsi async untuk POST OTD Performance ke backend
+  // Fungsi async untuk POST OTD Performance ke backend
   const saveOTDPerformanceToBackend = async (otdData) => {
     try {
       const response = await fetch('http://localhost:5000/api/otd-performance', {
@@ -263,19 +270,19 @@ export default function OTD({ changePage: propChangePage }) {
 
             <div className="relative" ref={profileRef}>
               <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
-                Admin <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+                {user?.name || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
               
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                     <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      AD
+                      {getInitials(user?.name)}
                     </div>
                     <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{profile.name}</h4>
-                      <p className="text-sm text-gray-400 truncate">{profile.email}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{profile.role}</span>
+                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.name || 'Admin'}</h4>
+                      <p className="text-sm text-gray-400 truncate">{user?.email || 'admin@detpak.com'}</p>
+                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || 'Administrator'}</span>
                     </div>
                   </div>
                   <div className="pt-2 space-y-1">
@@ -321,9 +328,11 @@ export default function OTD({ changePage: propChangePage }) {
             <button onClick={() => changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
-            <button onClick={() => changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
-            </button>
+            {canManageUsers && (
+              <button onClick={() => changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+                <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
+              </button>
+            )}
           </nav>
         </aside>
 
@@ -411,13 +420,13 @@ export default function OTD({ changePage: propChangePage }) {
                   <h3 className="text-center font-semibold text-slate-200 mb-4 text-base">Monthly OTD % Trend</h3>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={dashboardData.charts.trendData} margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
+                      <LineChart data={dashboardData.charts.trendData} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
                         <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} />
                         <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} domain={[0, 100]} />
                         <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff' }} formatter={(value) => `${value}%`} />
                         <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: '#cbd5e1' }} />
-                        <Line type="monotone" dataKey="OTD %" name="On-Time Delivery (%)" stroke="#f59e0b" strokeWidth={3} dot={{ fill: '#f59e0b', r: 4 }} />
+                        <Line type="monotone" dataKey="OTD %" name="On-Time Delivery (%)" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4, fill: '#f59e0b' }} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -428,7 +437,7 @@ export default function OTD({ changePage: propChangePage }) {
                   <div className="h-72 flex justify-center items-center">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
-                        <Pie data={dashboardData.charts.deliveryStatusData} cx="50%" cy="50%" outerRadius={95} fill="#8884d8" dataKey="value" stroke="none">
+                        <Pie data={dashboardData.charts.deliveryStatusData} dataKey="value" cx="50%" cy="50%" outerRadius={95} fill="#8884d8" stroke="none">
                           {dashboardData.charts.deliveryStatusData.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}

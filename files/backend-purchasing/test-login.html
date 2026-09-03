@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Login - RBAC System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+        }
+
+        .container {
+            background: #0f1419;
+            border: 2px solid #ff4757;
+            border-radius: 10px;
+            padding: 40px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 10px 40px rgba(255, 71, 87, 0.2);
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #ff4757;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #a4b0bd;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #a4b0bd;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #2c3e50;
+            border-radius: 5px;
+            background: #1a2332;
+            color: #fff;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #ff4757;
+            box-shadow: 0 0 10px rgba(255, 71, 87, 0.3);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-login {
+            background: #ff4757;
+            color: white;
+        }
+
+        .btn-login:hover {
+            background: #ee5a6f;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255, 71, 87, 0.4);
+        }
+
+        .btn-clear {
+            background: #2c3e50;
+            color: #a4b0bd;
+        }
+
+        .btn-clear:hover {
+            background: #3d5265;
+        }
+
+        .response-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #1a2332;
+            border-left: 4px solid #ff4757;
+            border-radius: 5px;
+            display: none;
+        }
+
+        .response-section.show {
+            display: block;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .response-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #ff4757;
+        }
+
+        .response-content {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #a4b0bd;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+
+        .success {
+            color: #26de81;
+        }
+
+        .error {
+            color: #ff4757;
+        }
+
+        .loading {
+            text-align: center;
+            color: #ff4757;
+        }
+
+        .spinner {
+            border: 2px solid #2c3e50;
+            border-top: 2px solid #ff4757;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .token-section {
+            margin-top: 15px;
+            padding: 15px;
+            background: #0f1419;
+            border-radius: 5px;
+            border: 1px dashed #ff4757;
+        }
+
+        .token-title {
+            font-size: 12px;
+            color: #ff4757;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+
+        .token-value {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            color: #26de81;
+            word-break: break-all;
+            margin-bottom: 10px;
+        }
+
+        .btn-copy {
+            width: 100%;
+            padding: 8px;
+            background: #26de81;
+            color: #000;
+            border: none;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .btn-copy:hover {
+            background: #20c997;
+        }
+
+        .info-box {
+            margin-top: 20px;
+            padding: 15px;
+            background: #1a2332;
+            border-radius: 5px;
+            border-left: 4px solid #4a90e2;
+            font-size: 13px;
+            color: #a4b0bd;
+        }
+
+        .info-box strong {
+            color: #4a90e2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 Test Login</h1>
+        <p class="subtitle">RBAC System - Admin Login</p>
+
+        <div class="form-group">
+            <label for="email">📧 Email</label>
+            <input 
+                type="email" 
+                id="email" 
+                value="admin@detmoldpackaging.com"
+                placeholder="Masukkan email"
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="password">🔑 Password</label>
+            <input 
+                type="password" 
+                id="password" 
+                value="Kanayakan_21"
+                placeholder="Masukkan password"
+            >
+        </div>
+
+        <div class="button-group">
+            <button class="btn-login" onclick="testLogin()">✅ Login</button>
+            <button class="btn-clear" onclick="clearForm()">🔄 Clear</button>
+        </div>
+
+        <div id="response" class="response-section">
+            <div class="response-title" id="responseTitle"></div>
+            <div class="response-content" id="responseContent"></div>
+        </div>
+
+        <div class="info-box">
+            <strong>💡 Info:</strong><br>
+            Pastikan server backend sudah running di http://localhost:5000
+        </div>
+    </div>
+
+    <script>
+        const testLogin = async () => {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const responseDiv = document.getElementById('response');
+            const responseTitle = document.getElementById('responseTitle');
+            const responseContent = document.getElementById('responseContent');
+
+            // Validation
+            if (!email || !password) {
+                responseTitle.textContent = '❌ Error';
+                responseTitle.className = 'response-title error';
+                responseContent.textContent = 'Email dan Password harus diisi!';
+                responseDiv.classList.add('show');
+                return;
+            }
+
+            // Show loading
+            responseTitle.textContent = '⏳ Loading...';
+            responseTitle.className = 'response-title loading';
+            responseContent.innerHTML = '<div class="spinner"></div>Mengirim request ke server...';
+            responseDiv.classList.add('show');
+
+            try {
+                console.log('🚀 Sending login request...');
+                const response = await fetch('http://localhost:5000/api/users/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.token) {
+                    // Success
+                    responseTitle.textContent = '✅ Login Berhasil!';
+                    responseTitle.className = 'response-title success';
+                    
+                    let content = `Status: ${response.status}\n`;
+                    content += `Message: ${data.message}\n\n`;
+                    content += `User Data:\n`;
+                    content += JSON.stringify(data.user, null, 2);
+                    
+                    responseContent.textContent = content;
+
+                    // Add token section
+                    const tokenSection = document.createElement('div');
+                    tokenSection.className = 'token-section';
+                    tokenSection.innerHTML = `
+                        <div class="token-title">🎫 JWT Token:</div>
+                        <div class="token-value">${data.token}</div>
+                        <button class="btn-copy" onclick="copyToken('${data.token}')">📋 Copy Token</button>
+                    `;
+                    responseDiv.appendChild(tokenSection);
+                } else {
+                    // Error
+                    responseTitle.textContent = `❌ Login Gagal (${response.status})`;
+                    responseTitle.className = 'response-title error';
+                    responseContent.textContent = JSON.stringify(data, null, 2);
+                }
+            } catch (error) {
+                responseTitle.textContent = '❌ Error';
+                responseTitle.className = 'response-title error';
+                responseContent.textContent = `Error: ${error.message}\n\nPastikan server backend sudah running!`;
+                console.error('Error:', error);
+            }
+        };
+
+        const clearForm = () => {
+            document.getElementById('email').value = 'admin@detmoldpackaging.com';
+            document.getElementById('password').value = 'Kanayakan_21';
+            document.getElementById('response').classList.remove('show');
+            document.getElementById('response').innerHTML = '';
+        };
+
+        const copyToken = (token) => {
+            navigator.clipboard.writeText(token).then(() => {
+                alert('✅ Token sudah dicopy ke clipboard!');
+            }).catch(() => {
+                alert('❌ Gagal copy token');
+            });
+        };
+
+        // Allow Enter key to login
+        document.getElementById('password').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                testLogin();
+            }
+        });
+
+        // Log on page load
+        console.log('✅ Test Login Page Loaded');
+        console.log('🔗 Backend URL: http://localhost:5000');
+    </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import { useRole } from '../context/RoleContext';
 
 // Initial form default state disesuaikan dengan format Excel
 const INITIAL_FORM_STATE = {
@@ -20,6 +21,9 @@ const INITIAL_FORM_STATE = {
 };
 
 export default function Suppliers({ changePage, onLogout }) {
+  const { hasPermission } = useRole();
+  const canManageUsers = hasPermission('manage_users');
+
   // === 1. SUPPLIER & PROFILE DATA STATE (PERSISTENT VIA LOCALSTORAGE) ===
   const [suppliers, setSuppliers] = useState(() => {
     const savedSuppliers = localStorage.getItem('dataSuppliersLadeuV3');
@@ -51,8 +55,11 @@ export default function Suppliers({ changePage, onLogout }) {
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
   const [currentTime, setCurrentTime] = useState(new Date());
   
-  // === DARK MODE STATE ===
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  // === DARK MODE STATE (PERSISTENT VIA LOCALSTORAGE) ===
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('appTheme');
+    return savedTheme !== null ? JSON.parse(savedTheme) : true;
+  });
 
   const profileRef = useRef(null);
   const fileInputRef = useRef(null); 
@@ -62,6 +69,11 @@ export default function Suppliers({ changePage, onLogout }) {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // Simpan pilihan tema mode gelap/terang secara otomatis ke LocalStorage
+  useEffect(() => {
+    localStorage.setItem('appTheme', JSON.stringify(isDarkMode));
+  }, [isDarkMode]);
 
   // Simpan data supplier secara otomatis setiap kali ada perubahan
   useEffect(() => {
@@ -97,7 +109,7 @@ export default function Suppliers({ changePage, onLogout }) {
     setEditId(null);
   };
 
-  // ✅ TAMBAHAN: Fungsi untuk POST data ke backend
+  // Fungsi untuk POST data ke backend
   const saveSupplierToBackend = async (supplierData) => {
     try {
       const response = await fetch('http://localhost:5000/api/suppliers', {
@@ -149,7 +161,6 @@ export default function Suppliers({ changePage, onLogout }) {
           ? { ...supplier, ...formData, prefix: calculatedPrefix }
           : supplier
       ));
-      // ✅ TAMBAHAN: Kirim ke backend setelah disimpan ke localStorage
       saveSupplierToBackend(formData);
     }
     resetForm();
@@ -206,7 +217,6 @@ export default function Suppliers({ changePage, onLogout }) {
           return;
         }
 
-        // Mapping Data Disesuaikan Dengan Header Excel
         const newSuppliers = jsonData.map((row, index) => {
           const name = row['Name'] || row['Nama Perusahaan'] || 'Unknown Supplier';
           
@@ -237,7 +247,6 @@ export default function Suppliers({ changePage, onLogout }) {
 
         setSuppliers(prev => [...prev, ...newSuppliers]);
         
-        // ✅ TAMBAHAN: POST setiap supplier ke backend
         newSuppliers.forEach(supplier => {
           saveSupplierToBackend(supplier);
         });
@@ -364,6 +373,12 @@ export default function Suppliers({ changePage, onLogout }) {
             <button onClick={() => changePage?.('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
+
+            {canManageUsers && (
+              <button onClick={() => changePage?.('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+              </button>
+            )}
           </nav>
         </aside>
 
@@ -407,7 +422,6 @@ export default function Suppliers({ changePage, onLogout }) {
           </div> 
 
           <div className="flex flex-col lg:flex-row gap-6">
-            {/* SUPPLIER TABLE */}
             <div className={`flex-1 border shadow-xs rounded-xl p-5 overflow-hidden transition-all duration-300 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
               <div className="flex justify-between items-center mb-5">
                 <h2 className={`text-lg font-semibold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>
@@ -473,7 +487,6 @@ export default function Suppliers({ changePage, onLogout }) {
               </div>
             </div>
 
-            {/* EDIT FORM */}
             {editId !== null && (
               <div className={`w-full lg:w-80 border shadow-xs rounded-xl p-5 h-fit max-h-[80vh] overflow-y-auto relative shrink-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <button onClick={resetForm} className={`absolute top-4 right-4 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
@@ -555,7 +568,6 @@ export default function Suppliers({ changePage, onLogout }) {
         </main>
       </div>
 
-      {/* QUICK VIEW DRAWER */}
       {selectedSupplier && (
         <div className="fixed inset-0 z-50 flex justify-end">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity duration-300" onClick={closeDrawer}></div>

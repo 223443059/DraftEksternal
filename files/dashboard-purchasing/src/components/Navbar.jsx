@@ -1,17 +1,26 @@
 import React from 'react';
-// 1. Import useRole dari context
 import { useRole } from '../context/RoleContext';
 
 export default function Navbar({ activePage, setActivePage, currentUser, onLogout }) {
-  // 2. Ambil fungsi isSuperAdmin dari RoleContext
-  const { isSuperAdmin } = useRole();
+  // Ambil data & helper dari RoleContext (dengan fallback aman)
+  const roleContext = useRole() || {};
+  const { user: contextUser, logoutUser, isAdmin: checkIsAdmin, isSuperAdmin: checkIsSuperAdmin } = roleContext;
 
-  // (Opsional) Tetap simpan variabel ini untuk sekedar menampilkan teks role di pojok kanan atas
-  const role = (currentUser?.role || '').toLowerCase();
+  // Gunakan data dari props jika ada, atau ambil otomatis dari Context
+  const user = currentUser || contextUser;
+  const handleLogout = onLogout || logoutUser;
+
+  // Cek status Admin secara komprehensif (Context / Role Name / Role ID)
+  const roleName = (user?.role || user?.role_name || '').toLowerCase();
+  const roleId = user?.role_id || user?.id_role;
   
-  // (Opsional) Logika lama jika menu Settings masih ingin ditampilkan untuk role 'admin' biasa
-  const roleId = currentUser?.role_id || currentUser?.id_role;
-  const isAdmin = role === 'admin' || role === 'super admin' || role === 'administrator' || roleId === 1;
+  const isAdmin = 
+    (typeof checkIsAdmin === 'function' && checkIsAdmin()) ||
+    (typeof checkIsSuperAdmin === 'function' && checkIsSuperAdmin()) ||
+    roleName === 'admin' || 
+    roleName === 'super admin' || 
+    roleName === 'administrator' || 
+    roleId === 1;
 
   const navbarStyle = {
     backgroundColor: '#2c3e50',
@@ -92,8 +101,8 @@ export default function Navbar({ activePage, setActivePage, currentUser, onLogou
           Report
         </button>
 
-        {/* 3. Render menu User Management HANYA jika isSuperAdmin() bernilai true */}
-        {isSuperAdmin() && (
+        {/* Render menu User Management HANYA jika Admin / Super Admin */}
+        {isAdmin && (
           <button
             style={buttonStyle(activePage === 'userManagement')}
             onClick={() => handleNavClick('userManagement')}
@@ -103,7 +112,7 @@ export default function Navbar({ activePage, setActivePage, currentUser, onLogou
           </button>
         )}
 
-        {/* Menu Settings (ditampilkan untuk Admin biasa dan Super Admin) */}
+        {/* Menu Settings */}
         {isAdmin && (
           <button
             style={buttonStyle(activePage === 'settings')}
@@ -116,7 +125,7 @@ export default function Navbar({ activePage, setActivePage, currentUser, onLogou
 
       <div style={userInfoStyle}>
         <span style={{ fontSize: '14px' }}>
-          👤 {currentUser?.username || 'User'} ({role})
+          👤 {user?.username || 'User'} ({user?.role || user?.role_name || roleName || 'Guest'})
         </span>
         <button
           style={{
@@ -128,7 +137,7 @@ export default function Navbar({ activePage, setActivePage, currentUser, onLogou
             cursor: 'pointer',
             fontSize: '14px'
           }}
-          onClick={onLogout}
+          onClick={handleLogout}
         >
           Logout
         </button>
