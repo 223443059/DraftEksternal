@@ -2,18 +2,19 @@ import { createContext, useContext, useState, useEffect } from 'react';
 
 const RoleContext = createContext(null);
 
-// Sesuai users.js: prefix route users kamu (mount path di server.js/index.js).
-// Pakai URL absolut ke backend Express, biar nggak nyasar ke dev server frontend
-// kalau frontend & backend jalan di port berbeda tanpa proxy.
-const API_BASE = 'http://localhost:5000/api/users';
+// MENGGUNAKAN window.location.hostname AGAR DINAMIS[cite: 1]
+// Jika dibuka dari localhost, dia akan cari ke localhost:5000
+// Jika dibuka dari idws-n26010, dia akan cari ke idws-n26010:5000
+// Jika dibuka dari IP 10.62.11.106, dia akan cari ke 10.62.11.106:5000
+const API_BASE = `http://${window.location.hostname}:5000/api/users`;
 
 export function RoleProvider({ children }) {
-  const [user, setUser] = useState(null); // { id, email, username, role_id, role }
-  const [permissions, setPermissions] = useState([]); // dari role_permissions, contoh: ['manage_users']
+  const [user, setUser] = useState(null); // { id, email, username, role_id, role }[cite: 1]
+  const [permissions, setPermissions] = useState([]); // dari role_permissions, contoh: ['manage_users'][cite: 1]
   const [loading, setLoading] = useState(true);
 
   // Ambil profile + permissions dari server (bukan decode JWT), karena
-  // permission-nya dinamis dari tabel role_permissions, bukan hardcode.
+  // permission-nya dinamis dari tabel role_permissions, bukan hardcode.[cite: 1]
   const fetchProfile = async (token) => {
     try {
       const res = await fetch(`${API_BASE}/profile`, {
@@ -41,7 +42,7 @@ export function RoleProvider({ children }) {
     }
   }, []);
 
-  // Panggil ini setelah POST /login sukses, dengan token dari response-nya
+  // Panggil ini setelah POST /login sukses, dengan token dari response-nya[cite: 1]
   const login = async (token) => {
     localStorage.setItem('token', token);
     const ok = await fetchProfile(token);
@@ -59,7 +60,7 @@ export function RoleProvider({ children }) {
 
   const hasPermission = (permission) => permissions.includes(permission);
 
-  // Semua route CRUD user di backend digerbang oleh satu permission: 'manage_users'
+  // Semua route CRUD user di backend digerbang oleh satu permission: 'manage_users'[cite: 1]
   const isAdmin = () => hasPermission('manage_users');
 
   const value = {
@@ -68,7 +69,7 @@ export function RoleProvider({ children }) {
     loading,
     login,
     logout,
-    logoutUser: logout, // alias, dipakai oleh Navbar.jsx
+    logoutUser: logout, // alias, dipakai oleh Navbar.jsx[cite: 1]
     hasPermission,
     isAdmin,
   };

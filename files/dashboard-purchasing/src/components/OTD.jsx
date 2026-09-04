@@ -240,12 +240,13 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage('dashboard')}>
-              <span className={`text-[36px] font-bold tracking-tight leading-none ${isDarkMode ? 'text-white' : 'text-[#004797]'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-                Det<span className="border-b-[4px] border-[#E31837] pb-1">pak</span>
-              </span>
-            </div>
-            
+            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
+              <img 
+                src="/images/logo.png" 
+                alt="Detpak Logo" 
+                className="h-12 w-auto object-contain" 
+              />
+            </div>            
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
               <button onClick={() => changePage('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
@@ -313,24 +314,28 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
       <div className="flex flex-1 overflow-hidden">
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
           <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
             </button>
-            <button onClick={() => changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
             </button>
-            <button onClick={() => changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
             </button>
-            <button onClick={() => changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
             </button>
-            <button onClick={() => changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
+            <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
+            </button>
+
             {canManageUsers && (
-              <button onClick={() => changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-                <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
+              <button onClick={() => changePage && changePage('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
               </button>
             )}
           </nav>

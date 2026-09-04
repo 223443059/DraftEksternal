@@ -11,7 +11,8 @@ import SupplierEvaluation from "./components/SupplierEvaluation.jsx";
 import MarketPrice from "./components/MarketPrice.jsx"; 
 import OTD from "./components/OTD.jsx";
 import UserManagement from "./components/UserManagement.jsx";
-import Navbar from './components/Navbar.jsx';
+// Navbar dimatikan agar tidak muncul double navigasi
+// import Navbar from './components/Navbar.jsx'; 
 import { RoleProvider, useRole } from './context/RoleContext';
 
 const DEFAULT_INITIAL_ORDERS = [];
@@ -147,14 +148,17 @@ function AppContent() {
 
   return (
     <>
-      <Navbar 
-        activePage={activePage} 
-        setActivePage={setActivePage} 
-        currentUser={currentUser} 
-        onLogout={handleLogout}
-        isAdmin={isAdmin()}
-        hasPermission={hasPermission}
-      />
+      {/* 
+        Komponen Navbar dimatikan di sini agar topbar hilang
+        <Navbar 
+          activePage={activePage} 
+          setActivePage={setActivePage} 
+          currentUser={currentUser} 
+          onLogout={handleLogout}
+          isAdmin={isAdmin()}
+          hasPermission={hasPermission}
+        /> 
+      */}
       {renderContent()}
     </>
   );

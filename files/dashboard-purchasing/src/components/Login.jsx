@@ -3,10 +3,10 @@ import { useRole } from '../context/RoleContext';
 
 export default function Login({ onLoginSuccess }) {
   // Dipakai untuk push token & profile+permissions ke RoleContext setelah login,
-  // supaya Navbar langsung tahu status admin tanpa perlu refresh halaman.
+  // supaya Navbar langsung tahu status admin tanpa perlu refresh halaman.[cite: 3]
   const { login } = useRole();
 
-  // Mode Tampilan: true = Login, false = Register
+  // Mode Tampilan: true = Login, false = Register[cite: 3]
   const [isLoginView, setIsLoginView] = useState(true);
 
   // =========================================================
@@ -24,15 +24,15 @@ export default function Login({ onLoginSuccess }) {
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
 
-  // State Modal Reset Password
+  // State Modal Reset Password[cite: 3]
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [resetInput, setResetInput] = useState('');
   const [resetSubmitted, setResetSubmitted] = useState(false);
 
   // Catatan: email tidak lagi auto-isi saat pertama buka halaman (permintaan user),
-  // meskipun 'rememberedEmail' tetap disimpan di localStorage kalau checkbox dicentang.
+  // meskipun 'rememberedEmail' tetap disimpan di localStorage kalau checkbox dicentang.[cite: 3]
 
-  // Deteksi Caps Lock
+  // Deteksi Caps Lock[cite: 3]
   const handleKeyDown = (e) => {
     if (e.getModifierState) {
       setIsCapsLockOn(e.getModifierState('CapsLock'));
@@ -72,9 +72,12 @@ export default function Login({ onLoginSuccess }) {
 
     setIsLoading(true);
 
-    // ✅ LOGIN KE BACKEND LARAGON
+    // ✅ LOGIN KE BACKEND LARAGON (SUDAH DIPERBAIKI MENGGUNAKAN HOSTNAME DINAMIS)
     try {
-      const response = await fetch('http://localhost:5000/api/users/login', {
+      // Menggunakan backtick (`) dan window.location.hostname
+      const API_URL = `http://${window.location.hostname}:5000/api/users/login`;
+      
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -90,7 +93,7 @@ export default function Login({ onLoginSuccess }) {
         return;
       }
 
-      // Save Remember Me
+      // Save Remember Me[cite: 3]
       if (rememberMe) {
         localStorage.setItem('rememberedEmail', loginEmail);
       } else {
@@ -99,7 +102,7 @@ export default function Login({ onLoginSuccess }) {
 
       // Simpan token & load profile+permissions ke RoleContext.
       // login() sudah otomatis localStorage.setItem('token', ...) di dalamnya,
-      // jadi tidak perlu diset manual lagi di sini.
+      // jadi tidak perlu diset manual lagi di sini.[cite: 3]
       const profileLoaded = await login(data.token);
       if (!profileLoaded) {
         setErrors({ loginPassword: 'Login berhasil tapi gagal memuat data profil. Coba lagi.' });

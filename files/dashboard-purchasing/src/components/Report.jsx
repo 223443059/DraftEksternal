@@ -229,18 +229,21 @@ export default function Report({ changePage, onLogout }) {
         {/* Row 1: Primary Navbar */}
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
+            
+            {/* LOGO DIPERBESAR (Ubah h-8 jadi h-12) */}
             <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <span className={`text-[36px] font-bold tracking-tight leading-none ${isDarkMode ? 'text-white' : 'text-[#004797]'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-                Det<span className="border-b-[4px] border-[#E31837] pb-1">pak</span>
-              </span>
+              <img 
+                src="/images/logo.png" 
+                alt="Logo Detpak" 
+                className="h-12 w-auto object-contain" 
+              />
             </div>
             
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
               <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-                          <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-
+              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
             </nav>
           </div>
 
@@ -303,7 +306,7 @@ export default function Report({ changePage, onLogout }) {
 
       {/* MAIN LAYOUT */}
       <div className="flex flex-1 overflow-hidden">
-        {/* SIDEBAR (Warna Navy gelap disamakan persis dengan Dashboard) */}
+        {/* SIDEBAR */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
           <nav className="flex flex-col gap-2 px-4">
             <button
@@ -330,7 +333,6 @@ export default function Report({ changePage, onLogout }) {
             >
               <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
             </button>
-            {/* Tombol Aktif 'Report' Menggunakan warna Merah (#E31837) persis Dashboard */}
             <button
               onClick={() => changePage && changePage('report')}
               className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white bg-[#E31837] rounded-xl transition-colors text-left cursor-pointer shadow-xs"
