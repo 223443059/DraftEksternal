@@ -1,19 +1,25 @@
-const mysql = require('mysql2');
+const mysql = require('mysql2/promise'); // Gunakan /promise
 
-const db = mysql.createConnection({
+const db = mysql.createPool({
   host: 'localhost',
   user: 'root',
   password: '',
   database: 'purchasing_db',
-  port: 3306
+  port: 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
-db.connect((err) => {
-  if (err) {
-    console.error('❌ Koneksi ke MySQL Laragon Gagal:', err);
-  } else {
+// Test koneksi
+(async () => {
+  try {
+    const connection = await db.getConnection();
     console.log('✅ Terhubung ke Database MySQL Laragon!');
+    connection.release();
+  } catch (err) {
+    console.error('❌ Database Connection Error:', err.message);
   }
-});
+})();
 
 module.exports = db;

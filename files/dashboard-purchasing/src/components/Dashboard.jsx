@@ -1,32 +1,24 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { getCurrentUser } from '../utils/authUtils'; 
 import { useRole } from '../context/RoleContext';
 import { useTheme } from '../hooks/useTheme';
 
-// === KURS KONVERSI ===
+// === CONVERSION RATE ===
 const KURS_IDR_TO_USD = 15500;
 
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
+  const [suppliersMap, setSuppliersMap] = useState({});
+  const [supplierParetoTab, setSupplierParetoTab] = useState('top20');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [selectedYear, setSelectedYear] = useState('All'); 
 
-  // Ambil data user dari utility
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    setUser(getCurrentUser());
-  }, []);
-
-  // Cek permission manage_users dari RoleContext
-  const { hasPermission } = useRole();
+  // User and permission from RoleContext
+  const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
-
-  const [supplierTab, setSupplierTab] = useState('top20'); 
   
-  // Dark/Light Mode State (Sinkron otomatis dengan hook useTheme & localStorage)
+  // Dark/Light Mode State
   const [isDarkMode, setIsDarkMode] = useTheme();
 
   // Drill-down 3 Level State (Pie Chart)
@@ -34,13 +26,15 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [selectedGroup, setSelectedGroup] = useState(null); 
   const [selectedSubCategory, setSelectedSubCategory] = useState(null); 
 
-  // State untuk Bar Chart Drill-down
+  // Bar Chart Drill-down State
   const [barChartGroup, setBarChartGroup] = useState(null); 
 
+  // Pareto Category Modal State
+  const [showCategoryPareto, setShowCategoryPareto] = useState(false);
+  const [selectedCategoryForPareto, setSelectedCategoryForPareto] = useState(null);
+
   // Profile Fallback & Notification State
-  const [profile] = useState({ name: 'Admin', email: 'admin@detmoldpackaging.com', role: 'Administrator' });
   const [showProfileCard, setShowProfileCard] = useState(false);
-  const [hasNotif, setHasNotif] = useState(true);
   const profileRef = useRef(null);
 
   // Real-time Clock for Header
@@ -53,21 +47,79 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const formattedTime = currentTime.toLocaleTimeString('en-GB', { hour12: false });
 
-  // Load PO Data from LocalStorage
+  // Fetch Supplier list
   useEffect(() => {
-    try {
-      const savedPOs =
-        localStorage.getItem('dataPOV5') ||
-        localStorage.getItem('dataPOV3') ||
-        localStorage.getItem('dataPurchaseOrdersLadeuV3') ||
-        localStorage.getItem('purchaseOrders');
-      if (savedPOs) {
-        setOrders(JSON.parse(savedPOs));
+    const fetchSuppliers = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/suppliers');
+        if (response.ok) {
+          const data = await response.json();
+          const map = {};
+          (Array.isArray(data) ? data : []).forEach((s) => {
+            const name = s.name || s.nama || s.perusahaan || s.supplier_name || s.supplier;
+            if (s.id !== undefined && name) {
+              map[s.id] = name;
+            }
+          });
+          setSuppliersMap(map);
+        }
+      } catch (e) {
+        console.error('Failed to fetch Supplier data from database:', e);
       }
-    } catch (e) {
-      console.error('Failed to load PO data in Dashboard', e);
-    }
+    };
+    fetchSuppliers();
   }, []);
+
+  // Fetch Purchase Orders
+  useEffect(() => {
+    const loadFromLocalCache = () => {
+      try {
+        const cached = localStorage.getItem('dataPO_Ladeu');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setOrders(parsed);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to read PO cache from localStorage:', e);
+      }
+    };
+
+    const fetchOrdersFromBackend = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/purchase-orders');
+        if (response.ok) {
+          const data = await response.json();
+          const formattedOrders = data.map((po) => ({
+            id: po.id,
+            poNumber: po.po_number || po.po_no || po.poNumber,
+            date: (po.po_date || po.order_date) ? String(po.po_date || po.order_date).split('T')[0] : '-',
+            supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
+            supplier_id: po.supplier_id,
+            totalCost: Number(po.total_amount || po.totalCost || 0),
+            status: po.status || po.order_status || 'Pending',
+            category: po.category || 'Raw Material',
+            notes: po.description || po.notes || '',
+            items: po.items || []
+          }));
+          setOrders(formattedOrders);
+          
+          if (formattedOrders.length > 0) {
+            localStorage.setItem('dataPO_Ladeu', JSON.stringify(formattedOrders));
+          }
+        } else {
+          loadFromLocalCache();
+        }
+      } catch (e) {
+        console.error('Failed to fetch Purchase Orders from database:', e);
+        loadFromLocalCache();
+      }
+    };
+
+    loadFromLocalCache();
+    fetchOrdersFromBackend();
+  }, [suppliersMap]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -79,14 +131,12 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleSearchClick = () => alert('Global search feature can be customized to your needs.');
-  const handleNotifClick = () => setHasNotif(false);
   const handleLogout = () => {
     if (onLogout) onLogout();
     else if (changePage) changePage('login');
   };
 
-  // === 2. HELPER GETTER DATA ===
+  // === 2. DATA HELPER GETTERS ===
   const getOrderTotal = (order) => {
     if (!order) return 0;
     const possibleKeys = [
@@ -96,7 +146,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     ];
 
     let rawValue = undefined;
-
     for (const key of possibleKeys) {
       if (order[key] !== undefined && order[key] !== null && order[key] !== '') {
         rawValue = order[key];
@@ -104,7 +153,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       }
     }
 
-    if ((rawValue === undefined || rawValue === 0) && order.items && Array.isArray(order.items)) {
+    if ((rawValue === undefined || rawValue === 0) && order.items && Array.isArray(order.items) && order.items.length > 0) {
       let calc = 0;
       order.items.forEach((item) => {
         let q = parseFloat(item.qty || item.quantity || 1);
@@ -133,17 +182,17 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const getOrderOrigin = (order) => {
     if (order.origin) return order.origin;
     if (order.asal) return order.asal;
-    if (order.isImport) return 'Impor';
-    if (order.isLocal) return 'Lokal';
+    if (order.isImport) return 'Import';
+    if (order.isLocal) return 'Local';
 
-    const str = (getOrderSupplier(order) + ' ' + (order.notes || '')).toLowerCase();
+    const str = (getOrderSupplier(order) + ' ' + (order.notes || '') + ' ' + (order.category || '')).toLowerCase();
     if (str.includes('import') || str.includes('impor') || str.includes('overseas')) {
-      return 'Impor';
+      return 'Import';
     }
-    return 'Lokal';
+    return 'Local';
   };
 
-  // === HELPER FORMATTER USD ===
+  // === USD FORMATTER HELPERS ===
   const formatUSD = (numberInIDR) => {
     const amountInUSD = (numberInIDR || 0) / KURS_IDR_TO_USD;
     return new Intl.NumberFormat('en-US', {
@@ -174,9 +223,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const normalizeCategory = (cat) => {
     const c = (cat || '').toLowerCase();
-    if (c.includes('raw')) return 'Raw Material';
+    if (c.includes('raw') || c.startsWith('rm')) return 'Raw Material';
     if (c.includes('consumable')) return 'Consumable Material';
-    if (c.includes('sparepart') || c.includes('spare')) return 'Sparepart';
+    if (c.includes('sparepart') || c.includes('spare') || c.startsWith('sp')) return 'Sparepart';
     if (c.includes('maintenance')) return 'Maintenance';
     return cat || 'Other';
   };
@@ -213,6 +262,399 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     });
   }, [orders, selectedYear]);
 
+  // === BAR CHART DATA (DIRECT VS INDIRECT / DRILL-DOWN) ===
+  const barChartData = useMemo(() => {
+    const catMap = {};
+    let maxVal = 0;
+
+    if (!barChartGroup) {
+      // Group spend into Direct and Indirect
+      yearFilteredOrders.forEach((order) => {
+        const normCat = normalizeCategory(getOrderCategory(order));
+        const parentCat = getParentCategory(normCat);
+        const cost = getOrderTotal(order);
+        catMap[parentCat] = (catMap[parentCat] || 0) + cost;
+      });
+    } else {
+      yearFilteredOrders.forEach((order) => {
+        const normCat = normalizeCategory(getOrderCategory(order));
+        const parentCat = getParentCategory(normCat);
+        const rawCat = getOrderCategory(order);
+
+        if (normCat === barChartGroup || parentCat === barChartGroup || rawCat === barChartGroup) {
+          if (Array.isArray(order.items) && order.items.length > 0) {
+            order.items.forEach(item => {
+              const name = (item.name || item.namaBarang || item.nama || 'Unnamed Item').trim();
+              let q = parseFloat(item.qty || item.quantity || 1);
+              let p = item.hargaSatuan || item.price || item.harga || 0;
+              if (typeof p === 'string') p = parseFloat(p.replace(/[^0-9]/g, '')) || 0;
+              const cost = q * p;
+              catMap[name] = (catMap[name] || 0) + cost;
+            });
+          } else {
+            const name = getOrderSupplier(order) !== '-' ? getOrderSupplier(order) : (order.notes || 'Other Spend');
+            const cost = getOrderTotal(order);
+            catMap[name] = (catMap[name] || 0) + cost;
+          }
+        }
+      });
+    }
+
+    const categories = Object.keys(catMap)
+      .filter(key => catMap[key] > 0)
+      .sort((a, b) => catMap[b] - catMap[a])
+      .slice(0, 10)
+      .map(catName => ({
+        name: catName,
+        value: catMap[catName]
+      }));
+    
+    const currentMax = categories.length > 0 ? categories[0].value : 1_400_000_000;
+    maxVal = Math.max(currentMax, 100_000);
+
+    return { categories, maxVal };
+  }, [yearFilteredOrders, barChartGroup]);
+
+  // DATA PARETO CATEGORY
+  const [categoryChartView, setCategoryChartView] = useState('bar');
+
+  const categoryParetoData = useMemo(() => {
+    const { categories: top10Categories } = barChartData;
+    const grandTotalSpend = top10Categories.reduce((acc, c) => acc + c.value, 0);
+
+    let runningSum = 0;
+    const items = top10Categories.map((cat) => {
+      runningSum += cat.value;
+      const cumPercent = grandTotalSpend > 0 ? (runningSum / grandTotalSpend) * 100 : 0;
+      const indPercent = grandTotalSpend > 0 ? (cat.value / grandTotalSpend) * 100 : 0;
+      return {
+        name: cat.name,
+        totalCost: cat.value,
+        cumCost: runningSum,
+        indPercent: parseFloat(indPercent.toFixed(1)),
+        cumPercent: Math.min(Math.round(cumPercent), 100)
+      };
+    });
+
+    return { items, grandTotalSpend };
+  }, [barChartData]);
+
+  // CATEGORY PARETO COMPUTATION FOR MODAL
+  const computeCategoryParetoData = (categoryName) => {
+    const categoryOrders = yearFilteredOrders.filter(
+      order => {
+        const normCat = normalizeCategory(getOrderCategory(order));
+        const parentCat = getParentCategory(normCat);
+        return parentCat === categoryName || normCat === categoryName || getOrderCategory(order) === categoryName;
+      }
+    );
+   
+    if (categoryOrders.length === 0) return null;
+   
+    const itemMap = {};
+    categoryOrders.forEach(order => {
+      const itemName = getOrderSupplier(order) !== '-' ? getOrderSupplier(order) : (order.notes || 'Unknown Item');
+      if (!itemMap[itemName]) {
+        itemMap[itemName] = 0;
+      }
+      itemMap[itemName] += getOrderTotal(order);
+    });
+   
+    let items = Object.entries(itemMap).map(([name, totalCost]) => ({
+      name,
+      totalCost,
+      percent: 0,
+      cumPercent: 0
+    }));
+   
+    items.sort((a, b) => b.totalCost - a.totalCost);
+   
+    const grandTotal = items.reduce((sum, item) => sum + item.totalCost, 0);
+    let cumTotal = 0;
+   
+    items = items.map((item) => {
+      cumTotal += item.totalCost;
+      return {
+        ...item,
+        percent: grandTotal > 0 ? (item.totalCost / grandTotal) * 100 : 0,
+        cumPercent: grandTotal > 0 ? (cumTotal / grandTotal) * 100 : 0
+      };
+    });
+   
+    return {
+      categoryName,
+      items,
+      grandTotal,
+      itemCount: items.length
+    };
+  };
+
+  const renderCategoryParetoModal = () => {
+    if (!showCategoryPareto || !selectedCategoryForPareto) return null;
+   
+    const paretoData = computeCategoryParetoData(selectedCategoryForPareto);
+    if (!paretoData) return null;
+   
+    const { items, grandTotal, categoryName } = paretoData;
+   
+    const svgWidth = 800;
+    const svgHeight = 400;
+    const padLeft = 70;
+    const padRight = 60;
+    const padTop = 50;
+    const padBottom = 100;
+    const chartW = svgWidth - padLeft - padRight;
+    const chartH = svgHeight - padTop - padBottom;
+   
+    const maxBarVal = Math.max(...items.map(d => d.totalCost), 1);
+    const numBars = items.length;
+    const step = chartW / numBars;
+    const barW = Math.max(step * 0.6, 15);
+   
+    const linePoints = items.map((item, i) => {
+      const cx = padLeft + (i + 0.5) * step;
+      const cy = padTop + chartH - (item.cumPercent / 100) * chartH;
+      return { cx, cy, cumPercent: item.cumPercent };
+    });
+   
+    const pathString = linePoints.reduce((acc, pt, i) => {
+      return i === 0 ? `M ${pt.cx},${pt.cy}` : `${acc} L ${pt.cx},${pt.cy}`;
+    }, '');
+   
+    const line80Y = padTop + chartH - (80 / 100) * chartH;
+   
+    return (
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div className={`rounded-2xl shadow-2xl w-full max-w-6xl border my-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
+          <div className={`p-6 border-b flex justify-between items-center ${isDarkMode ? 'border-slate-800 bg-[#0F172A]' : 'border-gray-200 bg-gray-50'}`}>
+            <div>
+              <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                📊 Pareto Analysis: {categoryName}
+              </h2>
+              <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                80/20 Pareto Principle - Identify items contributing to 80% of total spend
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setShowCategoryPareto(false);
+                setSelectedCategoryForPareto(null);
+              }}
+              className={`text-2xl hover:opacity-70 transition-opacity cursor-pointer ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}
+            >
+              ✕
+            </button>
+          </div>
+   
+          <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+                <p className={`text-xs font-semibold uppercase ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total Items</p>
+                <p className={`text-2xl font-bold mt-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{items.length}</p>
+              </div>
+              <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+                <p className={`text-xs font-semibold uppercase ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total Spend</p>
+                <p className={`text-2xl font-bold mt-2 text-red-600`}>{formatUSD(grandTotal)}</p>
+              </div>
+              <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+                <p className={`text-xs font-semibold uppercase ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>80% Threshold</p>
+                <p className={`text-2xl font-bold mt-2 text-blue-600`}>{formatUSD(grandTotal * 0.8)}</p>
+              </div>
+            </div>
+   
+            <div className={`p-6 rounded-lg border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+              <h3 className={`font-bold mb-4 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Pareto Diagram</h3>
+              <div className="overflow-x-auto">
+                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto min-w-[700px]">
+                  {[0, 25, 50, 75, 100].map((pct) => {
+                    const y = padTop + chartH - (pct / 100) * chartH;
+                    return (
+                      <g key={`grid-${pct}`}>
+                        <line
+                          x1={padLeft}
+                          y1={y}
+                          x2={svgWidth - padRight}
+                          y2={y}
+                          stroke={isDarkMode ? '#334155' : '#E5E7EB'}
+                          strokeDasharray="3 3"
+                          opacity="0.5"
+                        />
+                        <text
+                          x={padLeft - 8}
+                          y={y + 3}
+                          textAnchor="end"
+                          className={`text-[11px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}
+                        >
+                          {formatShortUSD((pct / 100) * maxBarVal)}
+                        </text>
+                        <text
+                          x={svgWidth - padRight + 8}
+                          y={y + 3}
+                          textAnchor="start"
+                          className="text-[11px] font-medium fill-blue-500"
+                        >
+                          {pct}%
+                        </text>
+                      </g>
+                    );
+                  })}
+   
+                  <line
+                    x1={padLeft}
+                    y1={line80Y}
+                    x2={svgWidth - padRight}
+                    y2={line80Y}
+                    stroke="#EF4444"
+                    strokeDasharray="5 5"
+                    strokeWidth="2"
+                    opacity="0.7"
+                  />
+                  <text
+                    x={svgWidth - padRight + 8}
+                    y={line80Y - 5}
+                    textAnchor="start"
+                    className="text-[11px] font-bold fill-red-500"
+                  >
+                    80%
+                  </text>
+   
+                  {items.map((item, i) => {
+                    const x = padLeft + (i + 0.5) * step - barW / 2;
+                    const barHeight = (item.totalCost / maxBarVal) * chartH;
+                    const y = padTop + chartH - barHeight;
+   
+                    return (
+                      <g key={`bar-${i}`}>
+                        <rect
+                          x={x}
+                          y={y}
+                          width={barW}
+                          height={barHeight}
+                          fill="#DC2626"
+                          opacity="0.7"
+                          rx="3"
+                        />
+                      </g>
+                    );
+                  })}
+   
+                  <path
+                    d={pathString}
+                    fill="none"
+                    stroke="#3B82F6"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+   
+                  {linePoints.map((pt, i) => (
+                    <circle
+                      key={`dot-${i}`}
+                      cx={pt.cx}
+                      cy={pt.cy}
+                      r="4"
+                      fill="#3B82F6"
+                      stroke="white"
+                      strokeWidth="2"
+                    />
+                  ))}
+   
+                  {items.map((item, i) => {
+                    if (i % Math.max(1, Math.floor(items.length / 8)) !== 0 && i !== 0) return null;
+                    return (
+                      <text
+                        key={`label-${i}`}
+                        x={padLeft + (i + 0.5) * step}
+                        y={svgHeight - padBottom + 20}
+                        textAnchor="middle"
+                        className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}
+                      >
+                        {item.name.substring(0, 10)}
+                      </text>
+                    );
+                  })}
+   
+                  <text
+                    x={padLeft - 40}
+                    y={padTop - 10}
+                    textAnchor="middle"
+                    className={`text-[12px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-700'}`}
+                  >
+                    Spend ($)
+                  </text>
+                  <text
+                    x={svgWidth - padRight + 40}
+                    y={padTop - 10}
+                    textAnchor="middle"
+                    className="text-[12px] font-bold fill-blue-500"
+                  >
+                    Cumulative %
+                  </text>
+                </svg>
+              </div>
+            </div>
+   
+            <div className={`p-6 rounded-lg border overflow-x-auto ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+              <h3 className={`font-bold mb-4 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Itemized Breakdown</h3>
+              <table className={`w-full text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                <thead>
+                  <tr className={`border-b ${isDarkMode ? 'border-slate-800 text-slate-400' : 'border-gray-200 text-gray-600'}`}>
+                    <th className="text-left py-2 px-3 font-semibold">#</th>
+                    <th className="text-left py-2 px-3 font-semibold">Item / Supplier</th>
+                    <th className="text-right py-2 px-3 font-semibold">Spend</th>
+                    <th className="text-right py-2 px-3 font-semibold">% of Total</th>
+                    <th className="text-right py-2 px-3 font-semibold">Cumulative %</th>
+                    <th className="text-center py-2 px-3 font-semibold">Vital Few?</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item, i) => {
+                    const isVitalFew = item.cumPercent <= 80;
+                    return (
+                      <tr
+                        key={i}
+                        className={`border-b transition-colors ${
+                          isVitalFew
+                            ? isDarkMode
+                              ? 'bg-red-900/20 border-slate-800'
+                              : 'bg-red-50 border-gray-100'
+                            : isDarkMode
+                            ? 'border-slate-800'
+                            : 'border-gray-100'
+                        }`}
+                      >
+                        <td className="py-3 px-3 font-semibold text-center">{i + 1}</td>
+                        <td className={`py-3 px-3 font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>
+                          {item.name}
+                        </td>
+                        <td className="py-3 px-3 text-right font-semibold text-red-600">
+                          {formatUSD(item.totalCost)}
+                        </td>
+                        <td className="py-3 px-3 text-right">{item.percent.toFixed(1)}%</td>
+                        <td className={`py-3 px-3 text-right font-semibold ${
+                          isVitalFew ? 'text-red-600' : 'text-blue-600'
+                        }`}>
+                          {item.cumPercent.toFixed(1)}%
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          {isVitalFew ? (
+                            <span className="text-lg">🔴</span>
+                          ) : (
+                            <span className="text-lg">🔵</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const filteredTotalCost = useMemo(() => {
     return yearFilteredOrders.reduce((sum, o) => sum + getOrderTotal(o), 0);
   }, [yearFilteredOrders]);
@@ -228,13 +670,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       totalCost += cost;
 
       const st = getOrderStatus(o).toLowerCase();
-      if (st.includes('selesai') || st.includes('paid') || st.includes('lunas')) {
+      if (st.includes('selesai') || st.includes('paid') || st.includes('lunas') || st.includes('completed')) {
         paidCost += cost;
       } else {
         pendingPayment += cost;
       }
 
-      if (getOrderOrigin(o).toLowerCase() === 'impor' || getOrderOrigin(o).toLowerCase() === 'import') importCount++;
+      if (getOrderOrigin(o).toLowerCase().includes('import') || getOrderOrigin(o).toLowerCase().includes('impor')) importCount++;
     });
 
     const totalOrders = yearFilteredOrders.length;
@@ -246,7 +688,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const pendingOrders = useMemo(() => {
     return yearFilteredOrders.filter((o) => {
       const st = getOrderStatus(o).toLowerCase();
-      return !(st.includes('selesai') || st.includes('paid') || st.includes('lunas'));
+      return !(st.includes('selesai') || st.includes('paid') || st.includes('lunas') || st.includes('completed'));
     });
   }, [yearFilteredOrders]);
 
@@ -268,23 +710,50 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return { months, monthlyTotals, maxVal };
   }, [yearFilteredOrders]);
 
-  const supplierStats = useMemo(() => {
+  const paretoSupplierData = useMemo(() => {
     const supMap = {};
+    let grandTotalSpend = 0;
+
     yearFilteredOrders.forEach((order) => {
       const sup = getOrderSupplier(order);
       const cost = getOrderTotal(order);
-      if (sup && sup !== '-') supMap[sup] = (supMap[sup] || 0) + cost;
+      if (sup && sup !== '-') {
+        supMap[sup] = (supMap[sup] || 0) + cost;
+        grandTotalSpend += cost;
+      }
     });
 
-    const sortedList = Object.keys(supMap)
+    const sortedDesc = Object.keys(supMap)
       .map((supName) => ({ name: supName, totalCost: supMap[supName] }))
       .sort((a, b) => b.totalCost - a.totalCost);
 
-    const top20 = sortedList.slice(0, 20);
-    const bottom20 = [...sortedList].sort((a, b) => a.totalCost - b.totalCost).slice(0, 20);
+    let selected = [];
+    if (supplierParetoTab === 'lowest20') {
+      selected = sortedDesc.slice(-20);
+    } else {
+      const top20 = sortedDesc.slice(0, 20);
+      const otherCost = sortedDesc.slice(20).reduce((acc, curr) => acc + curr.totalCost, 0);
+      selected = [...top20];
+      if (otherCost > 0) {
+        selected.push({ name: 'Others (Rest)', totalCost: otherCost });
+      }
+    }
 
-    return { top20, bottom20 };
-  }, [yearFilteredOrders]);
+    let runningSum = 0;
+    const items = selected.map((item) => {
+      runningSum += item.totalCost;
+      const cumPercent = grandTotalSpend > 0 ? (runningSum / grandTotalSpend) * 100 : 0;
+      const indPercent = grandTotalSpend > 0 ? (item.totalCost / grandTotalSpend) * 100 : 0;
+      return {
+        ...item,
+        cumCost: runningSum,
+        indPercent: parseFloat(indPercent.toFixed(1)),
+        cumPercent: Math.min(Math.round(cumPercent), 100)
+      };
+    });
+
+    return { items, grandTotalSpend };
+  }, [yearFilteredOrders, supplierParetoTab]);
 
   const filteredOrders = useMemo(() => {
     if (selectedCategory === 'All') return yearFilteredOrders;
@@ -307,10 +776,10 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const getStatusBadgeClass = (status) => {
     const s = (status || '').toLowerCase();
-    if (s.includes('selesai') || s.includes('paid') || s.includes('lunas')) {
+    if (s.includes('selesai') || s.includes('paid') || s.includes('lunas') || s.includes('completed')) {
       return isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-semibold' : 'bg-emerald-100 text-emerald-800 border border-emerald-300 font-semibold';
     }
-    if (s.includes('dikirim') || s.includes('proses')) {
+    if (s.includes('dikirim') || s.includes('proses') || s.includes('shipped') || s.includes('processing')) {
       return isDarkMode ? 'bg-blue-950/80 text-blue-400 border border-blue-800 font-semibold' : 'bg-blue-50 text-blue-700 border border-blue-200 font-semibold';
     }
     if (s.includes('unpaid') || s.includes('partial') || s.includes('pending')) {
@@ -321,13 +790,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const getOriginBadgeClass = (origin) => {
     const o = (origin || '').toLowerCase();
-    if (o === 'impor' || o === 'import') {
+    if (o.includes('import') || o.includes('impor')) {
       return isDarkMode ? 'bg-purple-950/80 text-purple-400 border border-purple-800 font-bold' : 'bg-purple-100 text-purple-700 border border-purple-300 font-bold';
     }
     return isDarkMode ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800 font-medium' : 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium';
   };
 
-  const pieChartData = useMemo(() => {
+const pieChartData = useMemo(() => {
     const catMap = {};
     let grandTotal = 0;
 
@@ -345,21 +814,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           const cost = getOrderTotal(order);
           catMap[normCat] = (catMap[normCat] || 0) + cost;
           grandTotal += cost;
-        }
-      });
-    } else if (drillLevel === 2 && selectedSubCategory) {
-      yearFilteredOrders.forEach((order) => {
-        const normCat = normalizeCategory(getOrderCategory(order));
-        if (normCat === selectedSubCategory && Array.isArray(order.items)) {
-          order.items.forEach(item => {
-            const name = (item.name || item.namaBarang || item.nama || 'Unnamed Item').trim();
-            let q = parseFloat(item.qty || item.quantity || 1);
-            let p = item.hargaSatuan || item.price || item.harga || 0;
-            if (typeof p === 'string') p = parseFloat(p.replace(/[^0-9]/g, '')) || 0;
-            const cost = q * p;
-            catMap[name] = (catMap[name] || 0) + cost;
-            grandTotal += cost;
-          });
         }
       });
     }
@@ -391,9 +845,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       });
 
     return { categories, grandTotal };
-  }, [yearFilteredOrders, drillLevel, selectedGroup, selectedSubCategory]);
-
-  const renderDrilldownPieChart = () => {
+  }, [yearFilteredOrders, drillLevel, selectedGroup]);
+const renderDrilldownPieChart = () => {
     const { categories, grandTotal } = pieChartData;
 
     if (!categories || categories.length === 0 || grandTotal === 0) {
@@ -459,42 +912,29 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       };
     });
 
+    // KLIK HANYA BERAKSI PADA LEVEL 0 (MAIN -> DIRECT/INDIRECT)
     const handleSliceClick = (sliceName) => {
       if (drillLevel === 0) {
         setSelectedGroup(sliceName);
         setDrillLevel(1);
-      } else if (drillLevel === 1) {
-        setSelectedSubCategory(sliceName);
-        setDrillLevel(2);
       }
     };
 
     return (
       <div className="w-full flex flex-col items-center">
+        {/* NAVIGASI BREADCRUMB (MAX LEVEL 1) */}
         <div className={`flex items-center gap-2 mb-2 mt-2 text-xs font-semibold p-2 rounded-lg border self-start ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
           <button 
-            onClick={() => { setDrillLevel(0); setSelectedGroup(null); setSelectedSubCategory(null); }}
+            onClick={() => { setDrillLevel(0); setSelectedGroup(null); }}
             className={`hover:text-red-500 transition-colors cursor-pointer ${drillLevel === 0 ? 'text-red-500 font-bold' : isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}
           >
             <i className="fa-solid fa-house mr-1"></i> Main
           </button>
           
-          {drillLevel >= 1 && (
+          {drillLevel === 1 && (
             <>
               <span className={isDarkMode ? 'text-slate-600' : 'text-gray-300'}>/</span>
-              <button 
-                onClick={() => { setDrillLevel(1); setSelectedSubCategory(null); }}
-                className={`hover:text-red-500 transition-colors cursor-pointer ${drillLevel === 1 ? 'text-red-500 font-bold' : isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}
-              >
-                {selectedGroup}
-              </button>
-            </>
-          )}
-
-          {drillLevel === 2 && (
-            <>
-              <span className={isDarkMode ? 'text-slate-600' : 'text-gray-300'}>/</span>
-              <span className="text-red-500 font-bold">{selectedSubCategory}</span>
+              <span className="text-red-500 font-bold">{selectedGroup}</span>
             </>
           )}
         </div>
@@ -502,7 +942,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         <div className="w-full h-72 relative mt-2">
           <svg viewBox="0 0 440 250" className="w-full h-full overflow-visible">
             {slices.map((slice, i) => {
-              const isClickable = drillLevel < 2;
+              const isClickable = drillLevel === 0;
               return (
                 <path
                   key={i}
@@ -510,7 +950,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   fill={slice.color}
                   stroke={isDarkMode ? '#1E293B' : '#FFFFFF'}
                   strokeWidth="2.5"
-                  className={`transition-all duration-200 hover:opacity-85 ${isClickable ? 'cursor-pointer hover:-translate-y-1' : ''}`}
+                  className={`transition-all duration-200 ${isClickable ? 'cursor-pointer hover:opacity-85 hover:-translate-y-1' : ''}`}
                   onClick={() => handleSliceClick(slice.name)}
                 />
               );
@@ -540,11 +980,10 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           </svg>
         </div>
 
-        {/* AREA LEGEND */}
         <div className={`w-full mt-4 pt-4 border-t max-h-[350px] overflow-y-auto scrollbar-thin ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
           <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs mb-2">
             {categories.map((cat, i) => (
-              <div key={i} className="flex items-center gap-2 max-w-[150px]" title={`${cat.name}: ${formatUSD(cat.value)}`}>
+              <div key={i} className="flex items-center gap-2 max-w-[180px]" title={`${cat.name}: ${formatUSD(cat.value)}`}>
                 <span className="w-3 h-3 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: cat.color }}></span>
                 <span className={`font-semibold truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>{cat.name}</span>
               </div>
@@ -554,48 +993,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       </div>
     );
   };
-
-  const barChartData = useMemo(() => {
-    const catMap = {};
-    let maxVal = 0;
-
-    if (!barChartGroup) {
-      yearFilteredOrders.forEach((order) => {
-        const cat = getParentCategory(normalizeCategory(getOrderCategory(order)));
-        const cost = getOrderTotal(order);
-        catMap[cat] = (catMap[cat] || 0) + cost;
-      });
-    } else {
-      yearFilteredOrders.forEach((order) => {
-        const cat = getParentCategory(normalizeCategory(getOrderCategory(order)));
-        if (cat === barChartGroup && Array.isArray(order.items)) {
-          order.items.forEach(item => {
-            const name = (item.name || item.namaBarang || item.nama || 'Unnamed Item').trim();
-            let q = parseFloat(item.qty || item.quantity || 1);
-            let p = item.hargaSatuan || item.price || item.harga || 0;
-            if (typeof p === 'string') p = parseFloat(p.replace(/[^0-9]/g, '')) || 0;
-            const cost = q * p;
-            catMap[name] = (catMap[name] || 0) + cost;
-          });
-        }
-      });
-    }
-
-    const categories = Object.keys(catMap)
-      .filter(key => catMap[key] > 0)
-      .sort((a, b) => catMap[b] - catMap[a])
-      .slice(0, 10)
-      .map(catName => ({
-        name: catName,
-        value: catMap[catName]
-      }));
-    
-    const currentMax = categories.length > 0 ? categories[0].value : 1_400_000_000;
-    maxVal = Math.max(currentMax, 100_000);
-
-    return { categories, maxVal };
-  }, [yearFilteredOrders, barChartGroup]);
-
   const renderCategoryBarChart = () => {
     const { categories: top10Categories, maxVal } = barChartData; 
     const barColors = ['#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#FECACA', '#FCA5A5', '#F87171', '#EF4444', '#DC2626', '#B91C1C'];
@@ -620,7 +1017,10 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     key={cat.name} 
                     className={`flex items-center h-7 text-xs sm:text-sm ${!barChartGroup ? 'cursor-pointer hover:opacity-75 transition-opacity' : ''}`}
                     onClick={() => {
-                      if (!barChartGroup) setBarChartGroup(cat.name);
+                      if (!barChartGroup) {
+                        setBarChartGroup(cat.name);
+                        setCategoryChartView('pareto');
+                      }
                     }}
                   >
                     <span className={`w-36 -ml-36 pr-4 text-right font-semibold truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`} title={cat.name}>
@@ -650,53 +1050,415 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     );
   };
 
-  const renderSupplierChart = () => {
-    const activeList = supplierTab === 'top20' ? supplierStats.top20 : supplierStats.bottom20;
-    
-    const topBarColors = ['#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#FECACA'];
-    const bottomBarColors = ['#EA580C', '#F97316', '#FB923C', '#FDBA74', '#FFEDD5'];
-    
-    const barColors = supplierTab === 'top20' ? topBarColors : bottomBarColors;
-    const currentMax = supplierStats.top20.length > 0 ? supplierStats.top20[0].totalCost : 1_400_000_000;
-    const maxVal = Math.max(currentMax, 100_000);
-    const ticks = [0, maxVal * 0.25, maxVal * 0.5, maxVal * 0.75, maxVal];
+  const renderSupplierParetoChart = () => {
+    const { items } = paretoSupplierData;
+
+    if (!items || items.length === 0) {
+      return (
+        <div className="h-64 flex items-center justify-center text-gray-400 text-sm">
+          No supplier spend data available for Pareto analysis.
+        </div>
+      );
+    }
+
+    const svgWidth = 720;
+    const svgHeight = 320;
+    const padLeft = 85; 
+    const padRight = 65;
+    const padTop = 45;
+    const padBottom = 80;
+    const chartW = svgWidth - padLeft - padRight;
+    const chartH = svgHeight - padTop - padBottom;
+
+    const maxBarVal = Math.max(...items.map((d) => d.totalCost), 1);
+    const numBars = items.length;
+    const step = chartW / numBars;
+    const barW = Math.max(step * 0.55, 12);
+
+    const linePoints = items.map((item, i) => {
+      const cx = padLeft + (i + 0.5) * step;
+      const cy = padTop + chartH - (item.cumPercent / 100) * chartH;
+      return { cx, cy, percent: item.cumPercent, name: item.name };
+    });
+
+    const pathString = linePoints.reduce((acc, pt, i) => {
+      return i === 0 ? `M ${pt.cx},${pt.cy}` : `${acc} L ${pt.cx},${pt.cy}`;
+    }, '');
 
     return (
-      <div className="w-full">
-        <div className="relative pl-36 pr-14 pb-10 pt-4 max-h-[500px] overflow-y-auto overflow-x-hidden scrollbar-thin">
-          <div className="absolute inset-0 left-36 right-14 bottom-10 flex justify-between pointer-events-none">
-            {ticks.map((_, i) => <div key={i} className={`h-full border-r border-dotted ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}></div>)}
+      <div className="w-full flex flex-col gap-6">
+        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-8 flex flex-col items-center">
+            <div className="w-full overflow-x-auto scrollbar-thin">
+              <div className="min-w-[650px] relative">
+                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto overflow-visible select-none">
+                  {[0, 20, 40, 60, 80, 100].map((pct) => {
+                    const y = padTop + chartH - (pct / 100) * chartH;
+                    return (
+                      <g key={pct}>
+                        <line 
+                          x1={padLeft} 
+                          y1={y} 
+                          x2={svgWidth - padRight} 
+                          y2={y} 
+                          stroke={isDarkMode ? '#334155' : '#E2E8F0'} 
+                          strokeDasharray="3 3" 
+                        />
+                        <text 
+                          x={padLeft - 8} 
+                          y={y + 3} 
+                          textAnchor="end" 
+                          className={`text-[10px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}
+                        >
+                          {formatShortUSD((pct / 100) * maxBarVal)}
+                        </text>
+                        <text 
+                          x={svgWidth - padRight + 8} 
+                          y={y + 3} 
+                          textAnchor="start" 
+                          className={`text-[10px] font-medium ${isDarkMode ? 'fill-purple-400' : 'fill-purple-600'}`}
+                        >
+                          {pct}%
+                        </text>
+                      </g>
+                    );
+                  })}
+                  
+                  <text 
+                    x={-(padTop + chartH / 2)} 
+                    y={15} 
+                    transform="rotate(-90)" 
+                    textAnchor="middle" 
+                    className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}
+                  >
+                    TOTAL SPEND (USD)
+                  </text>
+                  <text 
+                    x={padTop + chartH / 2} 
+                    y={-(svgWidth - 18)} 
+                    transform="rotate(90)" 
+                    textAnchor="middle" 
+                    className={`text-[11px] font-bold ${isDarkMode ? 'fill-purple-300' : 'fill-purple-700'}`}
+                  >
+                    CUMULATIVE PERCENTAGE (%)
+                  </text>
+                  {items.map((item, i) => {
+                    const cx = padLeft + (i + 0.5) * step;
+                    const xBar = cx - barW / 2;
+                    const hBar = (item.totalCost / maxBarVal) * chartH;
+                    const yBar = padTop + chartH - hBar;
+
+                    return (
+                      <g key={i} className="group cursor-pointer">
+                        <rect
+                          x={xBar}
+                          y={yBar}
+                          width={barW}
+                          height={hBar}
+                          fill={isDarkMode ? '#3B82F6' : '#60A5FA'}
+                          stroke={isDarkMode ? '#1D4ED8' : '#2563EB'}
+                          strokeWidth="1.5"
+                          rx="3"
+                          className="transition-all duration-300 group-hover:opacity-80"
+                        />
+                        <text
+                          x={cx}
+                          y={padTop + chartH + 16}
+                          textAnchor="end"
+                          transform={`rotate(-35, ${cx}, ${padTop + chartH + 16})`}
+                          className={`text-[10px] font-semibold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-700'}`}
+                        >
+                          {item.name.length > 14 ? item.name.substring(0, 12) + '...' : item.name}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  <path 
+                    d={pathString} 
+                    fill="none" 
+                    stroke="#A855F7" 
+                    strokeWidth="2.5" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                  />
+                  {linePoints.map((pt, i) => (
+                    <g key={i}>
+                      <circle 
+                        cx={pt.cx} 
+                        cy={pt.cy} 
+                        r="4.5" 
+                        fill={isDarkMode ? '#0F172A' : '#FFFFFF'} 
+                        stroke="#A855F7" 
+                        strokeWidth="2.5" 
+                      />
+                      <text
+                        x={pt.cx}
+                        y={pt.cy - 9}
+                        textAnchor="middle"
+                        className={`text-[10px] font-extrabold ${isDarkMode ? 'fill-purple-300' : 'fill-purple-800'}`}
+                      >
+                        {pt.percent}%
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              </div>
+            </div>
           </div>
-          <div className="space-y-4 relative z-10">
-            {activeList.length === 0 ? (
-              <div className="h-48 flex items-center justify-center text-gray-400 text-sm">No supplier data available</div>
-            ) : (
-              activeList.map((sup, idx) => {
-                const pct = Math.min((sup.totalCost / maxVal) * 100, 100);
-                return (
-                  <div key={sup.name} className="flex items-center h-7 text-xs sm:text-sm">
-                    <span className={`w-36 -ml-36 pr-4 text-right font-semibold truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`} title={sup.name}>{sup.name}</span>
-                    <div className="flex-1 flex items-center h-full relative">
-                      <div className="h-full rounded-r-lg transition-all duration-500 shadow-xs" style={{ width: `${Math.max(pct, 2)}%`, backgroundColor: barColors[idx % barColors.length] }}></div>
-                      <span className={`ml-3 font-bold whitespace-nowrap text-xs sm:text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{formatShortUSD(sup.totalCost)}</span>
-                    </div>
-                  </div>
-                );
-              })
-            )}
+
+          <div className="lg:col-span-4 w-full">
+            <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+              <div className={`p-3 border-b font-bold text-xs uppercase tracking-wider text-center ${isDarkMode ? 'bg-slate-800 text-purple-400 border-slate-700' : 'bg-purple-100 text-purple-900 border-gray-200'}`}>
+                Pareto Spend Analysis Table
+              </div>
+              <div className="max-h-[280px] overflow-y-auto scrollbar-thin">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className={`border-b text-[11px] font-bold ${isDarkMode ? 'border-slate-800 text-slate-400 bg-slate-900/50' : 'border-gray-200 text-gray-600 bg-white'}`}>
+                      <th className="py-2.5 px-3">SUPPLIER</th>
+                      <th className="py-2.5 px-2 text-right">SPEND</th>
+                      <th className="py-2.5 px-2 text-right">CUMULATIVE (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/60 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
+                    {items.map((item, idx) => (
+                      <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
+                        <td className="py-2 px-3 font-semibold truncate max-w-[120px]" title={item.name}>
+                          {item.name}
+                        </td>
+                        <td className="py-2 px-2 text-right font-medium">
+                          {formatShortUSD(item.totalCost)}
+                        </td>
+                        <td className="py-2 px-2 text-right font-bold text-purple-500">
+                          {item.cumPercent}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
-        </div>
-        <div className={`pl-36 pr-14 flex justify-between text-xs font-medium pt-3 border-t ${isDarkMode ? 'text-slate-500 border-slate-800' : 'text-gray-400 border-gray-100'}`}>
-          {ticks.map((t, i) => <span key={i} className="-translate-x-1/2">{t === 0 ? '$0' : formatShortUSD(t)}</span>)}
         </div>
       </div>
     );
   };
 
+  const renderCategoryParetoChart = () => {
+    const { items } = categoryParetoData;
+
+    if (!items || items.length === 0) {
+      return (
+        <div className="h-64 flex items-center justify-center text-gray-400 text-sm">
+          No category spend data available for Pareto analysis.
+        </div>
+      );
+    }
+
+    const svgWidth = 720;
+    const svgHeight = 320;
+    const padLeft = 85; 
+    const padRight = 65;
+    const padTop = 45;
+    const padBottom = 80;
+    const chartW = svgWidth - padLeft - padRight;
+    const chartH = svgHeight - padTop - padBottom;
+
+    const maxBarVal = Math.max(...items.map((d) => d.totalCost), 1);
+    const numBars = items.length;
+    const step = chartW / numBars;
+    const barW = Math.max(step * 0.55, 12);
+
+    const linePoints = items.map((item, i) => {
+      const cx = padLeft + (i + 0.5) * step;
+      const cy = padTop + chartH - (item.cumPercent / 100) * chartH;
+      return { cx, cy, percent: item.cumPercent, name: item.name };
+    });
+
+    const pathString = linePoints.reduce((acc, pt, i) => {
+      return i === 0 ? `M ${pt.cx},${pt.cy}` : `${acc} L ${pt.cx},${pt.cy}`;
+    }, '');
+
+    return (
+      <div className="w-full flex flex-col gap-6">
+        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-8 flex flex-col items-center">
+            <div className="w-full overflow-x-auto scrollbar-thin">
+              <div className="min-w-[650px] relative">
+                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto overflow-visible select-none">
+                  {[0, 20, 40, 60, 80, 100].map((pct) => {
+                    const y = padTop + chartH - (pct / 100) * chartH;
+                    return (
+                      <g key={pct}>
+                        <line 
+                          x1={padLeft} 
+                          y1={y} 
+                          x2={svgWidth - padRight} 
+                          y2={y} 
+                          stroke={isDarkMode ? '#334155' : '#E2E8F0'} 
+                          strokeDasharray="3 3" 
+                        />
+                        <text 
+                          x={padLeft - 8} 
+                          y={y + 3} 
+                          textAnchor="end" 
+                          className={`text-[10px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}
+                        >
+                          {formatShortUSD((pct / 100) * maxBarVal)}
+                        </text>
+                        <text 
+                          x={svgWidth - padRight + 8} 
+                          y={y + 3} 
+                          textAnchor="start" 
+                          className={`text-[10px] font-medium ${isDarkMode ? 'fill-purple-400' : 'fill-purple-600'}`}
+                        >
+                          {pct}%
+                        </text>
+                      </g>
+                    );
+                  })}
+                  
+                  <text 
+                    x={-(padTop + chartH / 2)} 
+                    y={15} 
+                    transform="rotate(-90)" 
+                    textAnchor="middle" 
+                    className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}
+                  >
+                    TOTAL SPEND (USD)
+                  </text>
+                  <text 
+                    x={padTop + chartH / 2} 
+                    y={-(svgWidth - 18)} 
+                    transform="rotate(90)" 
+                    textAnchor="middle" 
+                    className={`text-[11px] font-bold ${isDarkMode ? 'fill-purple-300' : 'fill-purple-700'}`}
+                  >
+                    CUMULATIVE PERCENTAGE (%)
+                  </text>
+                  {items.map((item, i) => {
+                    const cx = padLeft + (i + 0.5) * step;
+                    const xBar = cx - barW / 2;
+                    const hBar = (item.totalCost / maxBarVal) * chartH;
+                    const yBar = padTop + chartH - hBar;
+
+                    return (
+                      <g key={i} className="group cursor-pointer">
+                        <rect
+                          x={xBar}
+                          y={yBar}
+                          width={barW}
+                          height={hBar}
+                          fill={isDarkMode ? '#3B82F6' : '#60A5FA'}
+                          stroke={isDarkMode ? '#1D4ED8' : '#2563EB'}
+                          strokeWidth="1.5"
+                          rx="3"
+                          className="transition-all duration-300 group-hover:opacity-80"
+                        />
+                        <text
+                          x={cx}
+                          y={padTop + chartH + 16}
+                          textAnchor="end"
+                          transform={`rotate(-35, ${cx}, ${padTop + chartH + 16})`}
+                          className={`text-[10px] font-semibold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-700'}`}
+                        >
+                          {item.name.length > 14 ? item.name.substring(0, 12) + '...' : item.name}
+                        </text>
+                      </g>
+                    );
+                  })}
+                  <path 
+                    d={pathString} 
+                    fill="none" 
+                    stroke="#A855F7" 
+                    strokeWidth="2.5" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round" 
+                  />
+                  {linePoints.map((pt, i) => (
+                    <g key={i}>
+                      <circle 
+                        cx={pt.cx} 
+                        cy={pt.cy} 
+                        r="4.5" 
+                        fill={isDarkMode ? '#0F172A' : '#FFFFFF'} 
+                        stroke="#A855F7" 
+                        strokeWidth="2.5" 
+                      />
+                      <text
+                        x={pt.cx}
+                        y={pt.cy - 9}
+                        textAnchor="middle"
+                        className={`text-[10px] font-extrabold ${isDarkMode ? 'fill-purple-300' : 'fill-purple-800'}`}
+                      >
+                        {pt.percent}%
+                      </text>
+                    </g>
+                  ))}
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-4 w-full">
+            <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
+              <div className={`p-3 border-b font-bold text-xs uppercase tracking-wider text-center ${isDarkMode ? 'bg-slate-800 text-purple-400 border-slate-700' : 'bg-purple-100 text-purple-900 border-gray-200'}`}>
+                Pareto Spend Analysis Table
+              </div>
+              <div className="max-h-[280px] overflow-y-auto scrollbar-thin">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className={`border-b text-[11px] font-bold ${isDarkMode ? 'border-slate-800 text-slate-400 bg-slate-900/50' : 'border-gray-200 text-gray-600 bg-white'}`}>
+                      <th className="py-2.5 px-3">ITEM / SUPPLIER</th>
+                      <th className="py-2.5 px-2 text-right">SPEND</th>
+                      <th className="py-2.5 px-2 text-right">CUMULATIVE (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/60 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
+                    {items.map((item, idx) => (
+                      <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
+                        <td className="py-2 px-3 font-semibold truncate max-w-[120px]" title={item.name}>
+                          {item.name}
+                        </td>
+                        <td className="py-2 px-2 text-right font-medium">
+                          {formatShortUSD(item.totalCost)}
+                        </td>
+                        <td className="py-2 px-2 text-right font-bold text-purple-500">
+                          {item.cumPercent}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // === TAB NAVIGATION ===
+  const [activeTab, setActiveTab] = useState('overview');
+  const [isDashboardMenuOpen, setIsDashboardMenuOpen] = useState(() => {
+    const saved = localStorage.getItem('sidebarDashboardOpen');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sidebarDashboardOpen', isDashboardMenuOpen);
+  }, [isDashboardMenuOpen]);
+  const dashboardTabs = [
+    { id: 'overview', label: 'Overview', icon: 'fa-gauge-high' },
+    { id: 'category', label: 'Category', icon: 'fa-chart-pie' },
+    { id: 'supplier', label: 'Supplier', icon: 'fa-users' },
+    { id: 'transactions', label: 'Transactions', icon: 'fa-table-list' },
+  ];
+
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
       
-      {/* HEADER UTAMA */}
+      {/* MAIN HEADER */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
@@ -707,8 +1469,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                 className="h-12 w-auto object-contain" 
               />
             </div>            
-                        <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className="bg-[#E31837] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
+            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
+              <button onClick={() => changePage?.('dashboard')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
               <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
               <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
@@ -733,7 +1495,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
                 {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
-              
+
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
@@ -773,265 +1535,323 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       {/* BODY */}
       <div className="flex flex-1 overflow-hidden">
         
-        {/* === SIDEBAR === */}
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
+        {/* SIDEBAR */}
+{/* SIDEBAR */}
+        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
+          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
+        }`}>
           <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white bg-[#E31837] rounded-xl transition-colors text-left cursor-pointer shadow-xs">
-              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-            </button>
-            <button onClick={() => changePage && changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            
+            {/* PARENT: Dashboard */}
+            <div>
+              <button 
+                onClick={() => {
+                  if (activePage === 'dashboard') {
+                    setIsDashboardMenuOpen((prev) => !prev);
+                  } else {
+                    changePage && changePage('dashboard');
+                    setIsDashboardMenuOpen(true);
+                  }
+                }} 
+                className={`w-full flex items-center justify-between px-4 py-3 text-sm font-bold rounded-xl transition-colors text-left cursor-pointer ${
+                  activePage === 'dashboard' 
+                    ? 'bg-[#004797] text-white' 
+                    : isDarkMode 
+                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' 
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
+                </div>
+                <i className={`fa-solid fa-chevron-${isDashboardMenuOpen ? 'down' : 'right'} text-xs transition-transform`}></i>
+              </button>
+
+              {/* CHILD: Dashboard Sub-menus */}
+              {activePage === 'dashboard' && isDashboardMenuOpen && (
+                <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+                  {dashboardTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
+                        activeTab === tab.id
+                          ? isDarkMode ? 'text-slate-200 bg-slate-800/50' : 'text-gray-800 bg-gray-100'
+                          : isDarkMode ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+                      }`}
+                    >
+                      <i className={`fa-solid ${tab.icon} w-4 text-center`}></i> {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Menu Lainnya */}
+            <button onClick={() => changePage && changePage('suppliers')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'suppliers' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
             </button>
-            <button onClick={() => changePage && changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('purchaseOrders')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'purchaseOrders' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
             </button>
-            <button onClick={() => changePage && changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('analytics')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'analytics' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
             </button>
-            <button onClick={() => changePage && changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'report' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
-            <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage && changePage('settings')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'settings' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
 
-            {/* MENU USER MANAGEMENT KHUSUS SUPER ADMIN */}
             {canManageUsers && (
-              <button 
-                onClick={() => changePage && changePage('userManagement')} 
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${
+              <button
+onClick={() => changePage && changePage('userManagement')}                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
                   activePage === 'userManagement' 
                     ? 'bg-[#E31837] text-white font-bold' 
-                    : 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300'
+                    : isDarkMode
+                      ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
+                      : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
                 }`}
               >
                 <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
               </button>
             )}
-
           </nav>
         </aside>
-
         {/* MAIN CONTENT */}
         <main className="flex-1 overflow-y-auto p-8 space-y-6">
           <div>
             <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Dashboard Overview</h1>
-            <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Expenditure analysis and order origin monitoring (Lokal vs Impor).</p>
+            <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Expenditure analysis and order origin monitoring (Local vs Import).</p>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            
-            {/* Card 1: Total Cost */}
-            <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0 font-bold">
-                $
-              </div>
-              <div>
-                <div className="flex items-center gap-2 mb-0.5">
-                  <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
-                  
-                  <select 
-                    value={selectedYear}
-                    onChange={(e) => setSelectedYear(e.target.value)}
-                    className={`text-sm font-bold uppercase rounded-md px-2 py-1 outline-none cursor-pointer transition-colors ${
-                      isDarkMode 
-                        ? 'bg-slate-800 text-slate-200 border border-slate-600 focus:border-slate-400' 
-                        : 'bg-gray-100 text-gray-700 border border-gray-300 focus:border-gray-500'
-                    }`}
-                  >
-                    {availableYears.map(year => (
-                      <option key={year} value={year} className="text-sm py-1">
-                        {year === 'All' ? '(All Time)' : `(${year})`}
-                      </option>
-                    ))}
-                  </select>
-                  
-                </div>
-                <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
-              </div>
-            </div>
-            
-            {/* Card 2: Total Orders */}
-            <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center text-xl shrink-0">
-                <i className="fa-solid fa-box-archive"></i>
-              </div>
-              <div>
-                <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Orders</p>
-                <div className="flex items-baseline gap-2">
-                  <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
-                  {kpiStats.importCount > 0 && (
-                    <span className="text-xs font-bold text-purple-500 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
-                      {kpiStats.importCount} Impor
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Card 3: Pending Payment */}
-            <div onClick={() => setShowPendingModal(true)} className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 cursor-pointer hover:border-red-500 transition-all group ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0">
-                <i className="fa-solid fa-file-invoice-dollar"></i>
-              </div>
-              <div>
-                <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Pending Payment</p>
-                <p className="text-2xl font-black text-red-500">{formatUSD(kpiStats.pendingPayment)}</p>
-                <button className="text-[11px] font-semibold text-red-500 group-hover:underline mt-0.5 inline-block cursor-pointer focus:outline-none">Click for details & origin →</button>
-              </div>
-            </div>
-
-            {/* Card 4: Average % Paid */}
-            <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="w-12 h-12 rounded-xl bg-[#2563EB] text-white flex items-center justify-center text-xl shrink-0">
-                <i className="fa-solid fa-chart-pie"></i>
-              </div>
-              <div>
-                <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Average % Paid</p>
-                <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-700'}`}>{kpiStats.avgPaid}%</p>
-              </div>
-            </div>
-          </div>
-
-          <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-            <h3 className={`font-bold text-center text-sm mb-6 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Cost by Month Name (USD)</h3>
-            <div className="w-full h-64 relative">
-              <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
-                {[1_600_000_000, 1_200_000_000, 800_000_000, 400_000_000, 0].map((labelVal, i) => {
-                  const y = 30 + i * 40;
-                  return (
-                    <g key={i}>
-                      <line x1="40" y1={y} x2="960" y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" />
-                      <text x="30" y={y + 4} textAnchor="end" className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>
-                        {labelVal === 0 ? '$0' : formatShortUSD(labelVal)}
-                      </text>
-                    </g>
-                  );
-                })}
-                <path d={generateSvgLinePath(monthlyStats.monthlyTotals, 1000, 240, monthlyStats.maxVal)} fill="none" stroke="#DC2626" strokeWidth="3.5" />
-                {monthlyStats.monthlyTotals.map((val, idx) => {
-                  const x = (idx / 11) * 920 + 40;
-                  const y = 210 - (val / monthlyStats.maxVal) * 180;
-                  return (
-                    <g key={idx}>
-                      <circle cx={x} cy={y} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#DC2626" strokeWidth="3" />
-                      {val > 0 && <text x={x} y={y - 10} textAnchor="middle" className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-200' : 'fill-gray-800'}`}>{formatShortUSD(val)}</text>}
-                      <text x={x} y="232" textAnchor="middle" className={`text-[11px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{monthlyStats.months[idx]}</text>
-                    </g>
-                  );
-                })}
-              </svg>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-6">
-            {/* CARD 1: PIE CHART SPEND BY CATEGORY */}
-            <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="w-full text-left mb-2">
-                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                   Total Spend by Category 
-                </h3>
-                <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                  {drillLevel === 0 && 'Click on a chart slice to view sub-categories.'}
-                  {drillLevel === 1 && 'Click on a sub-category to view item details.'}
-                  {drillLevel === 2 && 'Item details breakdown (Deepest level).'}
-                </p>
-              </div>
-              {renderDrilldownPieChart()}
-            </div>
-
-            {/* CARD 2: GRAFIK BATANG HORIZONTAL TOP 10 SPEND BY CATEGORY */}
-            <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
-                <div>
-                  <div className="flex items-center gap-3">
-                    <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {barChartGroup ? `Top 10 Items in ${barChartGroup}` : 'Top 10 Total Spend by Category'}
-                    </h3>
-                    {barChartGroup && (
-                      <button 
-                        onClick={() => setBarChartGroup(null)}
-                        className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded-md hover:bg-red-200 transition-colors cursor-pointer font-semibold flex items-center"
+          {activeTab === 'overview' && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0 font-bold">
+                    $
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
+                      <select 
+                        value={selectedYear}
+                        onChange={(e) => setSelectedYear(e.target.value)}
+                        className={`text-sm font-bold uppercase rounded-md px-2 py-1 outline-none cursor-pointer transition-colors ${
+                          isDarkMode 
+                            ? 'bg-slate-800 text-slate-200 border border-slate-600 focus:border-slate-400' 
+                            : 'bg-gray-100 text-gray-700 border border-gray-300 focus:border-gray-500'
+                        }`}
                       >
-                        <i className="fa-solid fa-arrow-left mr-1"></i> Back
-                      </button>
+                        {availableYears.map(year => (
+                          <option key={year} value={year} className="text-sm py-1">
+                            {year === 'All' ? '(All Time)' : `(${year})`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
+                  </div>
+                </div>
+
+                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center text-xl shrink-0">
+                    <i className="fa-solid fa-box-archive"></i>
+                  </div>
+                  <div>
+                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Orders</p>
+                    <div className="flex items-baseline gap-2">
+                      <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
+                      {kpiStats.importCount > 0 && (
+                        <span className="text-xs font-bold text-purple-500 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
+                          {kpiStats.importCount} Import
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div onClick={() => setShowPendingModal(true)} className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 cursor-pointer hover:border-red-500 transition-all group ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0">
+                    <i className="fa-solid fa-file-invoice-dollar"></i>
+                  </div>
+                  <div>
+                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Pending Payment</p>
+                    <p className="text-2xl font-black text-red-500">{formatUSD(kpiStats.pendingPayment)}</p>
+                    <button className="text-[11px] font-semibold text-red-500 group-hover:underline mt-0.5 inline-block cursor-pointer focus:outline-none">Click for details & origin →</button>
+                  </div>
+                </div>
+
+                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-12 h-12 rounded-xl bg-[#2563EB] text-white flex items-center justify-center text-xl shrink-0">
+                    <i className="fa-solid fa-chart-pie"></i>
+                  </div>
+                  <div>
+                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Average % Paid</p>
+                    <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-700'}`}>{kpiStats.avgPaid}%</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <h3 className={`font-bold text-center text-sm mb-6 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Cost by Month Name (USD)</h3>
+                <div className="w-full h-64 relative">
+                  <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
+                    {[1_600_000_000, 1_200_000_000, 800_000_000, 400_000_000, 0].map((labelVal, i) => {
+                      const y = 30 + i * 40;
+                      return (
+                        <g key={i}>
+                          <line x1="40" y1={y} x2="960" y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" />
+                          <text x="30" y={y + 4} textAnchor="end" className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>
+                            {labelVal === 0 ? '$0' : formatShortUSD(labelVal)}
+                          </text>
+                        </g>
+                      );
+                    })}
+                    <path d={generateSvgLinePath(monthlyStats.monthlyTotals, 1000, 240, monthlyStats.maxVal)} fill="none" stroke="#DC2626" strokeWidth="3.5" />
+                    {monthlyStats.monthlyTotals.map((val, idx) => {
+                      const x = (idx / 11) * 920 + 40;
+                      const y = 210 - (val / monthlyStats.maxVal) * 180;
+                      return (
+                        <g key={idx}>
+                          <circle cx={x} cy={y} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#DC2626" strokeWidth="3" />
+                          {val > 0 && <text x={x} y={y - 10} textAnchor="middle" className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-200' : 'fill-gray-800'}`}>{formatShortUSD(val)}</text>}
+                          <text x={x} y="232" textAnchor="middle" className={`text-[11px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{monthlyStats.months[idx]}</text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </div>
+              </div>
+            </>
+          )}
+
+{activeTab === 'category' && (
+            <div className="flex flex-col gap-6">
+              <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="w-full text-left mb-2">
+                  <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Category</h3>
+                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    {drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to view sub-categories.' : `Category breakdown for ${selectedGroup}.`}
+                  </p>
+                </div>
+                {renderDrilldownPieChart()}
+              </div>
+              <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {barChartGroup ? `Top 10 Items in ${barChartGroup}` : 'Total Spend by Direct & Indirect Category'}
+                      </h3>
+                      {barChartGroup && (
+                        <button 
+                          onClick={() => {
+                            setBarChartGroup(null);
+                            setCategoryChartView('bar');
+                          }}
+                          className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded-md hover:bg-red-200 transition-colors cursor-pointer font-semibold flex items-center"
+                        >
+                          <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                        </button>
+                      )}
+                    </div>
+                    {!barChartGroup && (
+                      <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Click on any bar to view its Pareto analysis.</p>
                     )}
                   </div>
-                  <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    {barChartGroup 
-                      ? `Top 10 highest spend items for ${barChartGroup} category` 
-                      : 'Top 10 categories by highest spend (Click a bar to view items)'}
-                  </p>
                 </div>
+                {barChartGroup && categoryChartView === 'pareto' ? renderCategoryParetoChart() : renderCategoryBarChart()}
               </div>
-              {renderCategoryBarChart()}
             </div>
+          )}
 
-            {/* CARD 3: SUPPLIER COST CHART */}
-            <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
-                <div>
-                  <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Cost by Supplier Name</h3>
-                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    {supplierTab === 'top20' ? 'Top 20 suppliers by highest cost' : 'Top 20 suppliers by lowest cost'}
-                  </p>
+          {activeTab === 'supplier' && (
+            <div className="flex flex-col gap-6">
+              <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6 border-b pb-4 border-slate-700/50">
+                  <div>
+                    <h3 className={`font-bold text-lg uppercase tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {supplierParetoTab === 'lowest20' ? 'LOWEST 20 SPEND BY SUPPLIER' : 'TOP 20 SPEND BY SUPPLIER'}
+                    </h3>
+                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                      {supplierParetoTab === 'lowest20'
+                        ? '20 suppliers with the lowest spend along with their cumulative percentages.'
+                        : 'Supplier spend distribution analysis with cumulative percentage curve (80/20 Pareto Principle).'}
+                    </p>
+                  </div>
+                  <div className={`flex p-1 rounded-xl shrink-0 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>
+                    <button 
+                      onClick={() => setSupplierParetoTab('top20')} 
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'top20' ? 'bg-red-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                    >
+                      Top 20
+                    </button>
+                    <button 
+                      onClick={() => setSupplierParetoTab('lowest20')} 
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'lowest20' ? 'bg-orange-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                    >
+                      Lowest 20
+                    </button>
+                  </div>
                 </div>
-                <div className={`flex p-1 rounded-xl shrink-0 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>
-                  <button onClick={() => setSupplierTab('top20')} className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierTab === 'top20' ? 'bg-red-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}>Top 20</button>
-                  <button onClick={() => setSupplierTab('bottom20')} className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierTab === 'bottom20' ? 'bg-orange-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}>Bottom 20</button>
-                </div>
+                
+                {renderSupplierParetoChart()}
               </div>
-              {renderSupplierChart()}
             </div>
-          </div>
+          )}
 
-          <div className={`rounded-2xl border shadow-xs overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-            <div className={`p-6 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-              <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Transaction & Payment Details</h3>
-              <div className="flex gap-2">
-                {['All', 'Direct', 'Indirect'].map((cat) => (
-                  <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-3 py-1 text-xs rounded-lg transition-colors cursor-pointer ${selectedCategory === cat ? 'bg-red-600 text-white font-semibold' : isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                    {cat}
-                  </button>
-                ))}
+          {activeTab === 'transactions' && (
+            <div className={`rounded-2xl border shadow-xs overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+              <div className={`p-6 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Transaction & Payment Details</h3>
+                <div className="flex gap-2">
+                  {['All', 'Direct', 'Indirect'].map((cat) => (
+                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-3 py-1 text-xs rounded-lg transition-colors cursor-pointer ${selectedCategory === cat ? 'bg-red-600 text-white font-semibold' : isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                      {cat}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead>
+                    <tr className={`border-b font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                      <th className="py-4 px-6">Date</th>
+                      <th className="py-4 px-6">PO No.</th>
+                      <th className="py-4 px-6">Supplier Name</th>
+                      <th className="py-4 px-6">Category</th>
+                      <th className="py-4 px-6">Origin</th>
+                      <th className="py-4 px-6">Total Cost</th>
+                      <th className="py-4 px-6">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
+                    {filteredOrders.length === 0 ? (
+                      <tr><td colSpan="7" className="py-10 text-center text-gray-400">No transactions found.</td></tr>
+                    ) : (
+                      filteredOrders.map((order, idx) => {
+                        const origin = getOrderOrigin(order);
+                        return (
+                          <tr key={order.poNumber || order.noPO || idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                            <td className={`py-4 px-6 text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderDate(order)}</td>
+                            <td className="py-4 px-6 font-bold text-red-500 hover:underline cursor-pointer">{getPoNumber(order)}</td>
+                            <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{getOrderSupplier(order)}</td>
+                            <td className="py-4 px-6"><span className={`px-3 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'}`}>{normalizeCategory(getOrderCategory(order))}</span></td>
+                            <td className="py-4 px-6"><span className={`px-2.5 py-1 rounded-full text-xs ${getOriginBadgeClass(origin)}`}>{origin.toLowerCase().includes('import') || origin.toLowerCase().includes('impor') ? '🚢 Import' : '📦 Local'}</span></td>
+                            <td className={`py-4 px-6 font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(getOrderTotal(order))}</td>
+                            <td className="py-4 px-6"><span className={`px-3 py-1 rounded-full text-xs ${getStatusBadgeClass(getOrderStatus(order))}`}>{getOrderStatus(order)}</span></td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm whitespace-nowrap">
-                <thead>
-                  <tr className={`border-b font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
-                    <th className="py-4 px-6">Date</th>
-                    <th className="py-4 px-6">PO No.</th>
-                    <th className="py-4 px-6">Supplier Name</th>
-                    <th className="py-4 px-6">Category</th>
-                    <th className="py-4 px-6">Description</th>
-                    <th className="py-4 px-6">Total Cost</th>
-                    <th className="py-4 px-6">Status</th>
-                  </tr>
-                </thead>
-                <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
-                  {filteredOrders.length === 0 ? (
-                    <tr><td colSpan="7" className="py-10 text-center text-gray-400">No transactions found.</td></tr>
-                  ) : (
-                    filteredOrders.map((order, idx) => {
-                      const origin = getOrderOrigin(order);
-                      return (
-                        <tr key={order.poNumber || order.noPO || idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                          <td className={`py-4 px-6 text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderDate(order)}</td>
-                          <td className="py-4 px-6 font-bold text-red-500 hover:underline cursor-pointer">{getPoNumber(order)}</td>
-                          <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{getOrderSupplier(order)}</td>
-                          <td className="py-4 px-6"><span className={`px-3 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'}`}>{normalizeCategory(getOrderCategory(order))}</span></td>
-                          <td className="py-4 px-6"><span className={`px-2.5 py-1 rounded-full text-xs ${getOriginBadgeClass(origin)}`}>{origin.toLowerCase() === 'impor' || origin.toLowerCase() === 'import' ? '🚢 Impor' : '📦 Lokal'}</span></td>
-                          <td className={`py-4 px-6 font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(getOrderTotal(order))}</td>
-                          <td className="py-4 px-6"><span className={`px-3 py-1 rounded-full text-xs ${getStatusBadgeClass(getOrderStatus(order))}`}>{getOrderStatus(order)}</span></td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          )}
         </main>
       </div>
 
@@ -1063,6 +1883,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           </div>
         </div>
       )}
+
+      {renderCategoryParetoModal()}
     </div>
   );
 }

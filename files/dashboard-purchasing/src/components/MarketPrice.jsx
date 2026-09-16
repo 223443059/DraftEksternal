@@ -4,9 +4,16 @@ import { useRole } from '../context/RoleContext';
 
 // === KOMPONEN GRAFIK TREN HARGA (SVG Dynamic Chart) ===
 function CommodityChart({ history, isDarkMode, unit }) {
-  const chartData = [...history].reverse();
+  const chartData = history ? [...history].reverse() : [];
   
-  if (!chartData || chartData.length === 0) return null;
+  if (!chartData || chartData.length === 0) {
+    return (
+      <div className="w-full h-[280px] flex flex-col items-center justify-center border-2 border-dashed rounded-xl" style={{ borderColor: isDarkMode ? '#334155' : '#E2E8F0' }}>
+        <i className={`fa-solid fa-chart-area text-4xl mb-3 ${isDarkMode ? 'text-slate-600' : 'text-gray-300'}`}></i>
+        <p className={`text-sm font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Grafik kosong. Silakan Import Excel untuk melihat tren data.</p>
+      </div>
+    );
+  }
 
   const prices = chartData.map((d) => d.price);
   const minPrice = Math.min(...prices);
@@ -139,114 +146,94 @@ function CommodityChart({ history, isDarkMode, unit }) {
   );
 }
 
-// === DATA BAWAAN ===
-const defaultCommodities = {
+// === TEMPLATE KOSONG ===
+const emptyCommodities = {
   crude: {
     name: 'Crude Oil (WTI/Brent)',
     unit: 'USD / Barrel',
-    currentPrice: 82.34,
-    change: '+0.28%',
+    currentPrice: 0,
+    change: '0.00%',
     isPositive: true,
-    open: 82.11,
-    high: 82.50,
-    low: 82.02,
-    vol: '10.00K',
+    open: 0,
+    high: 0,
+    low: 0,
+    vol: '0',
     description: 'WTI & Brent Crude Oil are used as global oil price benchmarks and for estimating energy, plastics, and logistics costs.',
-    history: [
-      { date: '10/08/2026', price: 82.34, open: 82.11, high: 82.50, low: 82.02, vol: '10.00K', change: '+0.28%' },
-      { date: '08/08/2026', price: 82.11, open: 78.55, high: 82.38, low: 77.80, vol: '1.66K', change: '+4.23%' },
-      { date: '08/07/2026', price: 78.78, open: 78.55, high: 79.41, low: 78.35, vol: '-', change: '+0.77%' },
-      { date: '08/06/2026', price: 78.18, open: 78.17, high: 78.77, low: 76.53, vol: '241.22K', change: '+1.15%' },
-      { date: '08/05/2026', price: 77.29, open: 75.14, high: 78.51, low: 74.57, vol: '246.26K', change: '+2.75%' },
-    ]
+    history: []
   },
   nbsk: {
     name: 'NBSK Pulp (Softwood)',
     unit: 'USD / MT',
-    currentPrice: 725.00,
-    change: '-1.53%',
-    isPositive: false,
-    open: 736.29,
-    high: 737.29,
-    low: 723.04,
-    vol: '3.73M',
+    currentPrice: 0,
+    change: '0.00%',
+    isPositive: true,
+    open: 0,
+    high: 0,
+    low: 0,
+    vol: '0',
     description: 'Northern Bleached Softwood Kraft (NBSK) is high-quality long-fiber pulp raw material for paper packaging.',
-    history: [
-      { date: '10/08/2026', price: 725.00, open: 736.29, high: 737.29, low: 723.04, vol: '3.73M', change: '-1.53%' },
-      { date: '07/08/2026', price: 736.28, open: 734.98, high: 738.88, low: 732.21, vol: '6.78M', change: '+0.29%' },
-      { date: '06/08/2026', price: 734.14, open: 734.12, high: 736.86, low: 731.34, vol: '8.98M', change: '-0.08%' },
-      { date: '05/08/2026', price: 734.76, open: 736.19, high: 736.67, low: 733.90, vol: '7.19M', change: '-0.06%' },
-      { date: '04/08/2026', price: 735.20, open: 734.51, high: 736.65, low: 732.01, vol: '3.76M', change: '-0.02%' },
-    ]
+    history: []
   },
   bhkp: {
     name: 'BHKP Pulp (Hardwood)',
     unit: 'USD / MT',
-    currentPrice: 610.00,
-    change: '-5.40%',
-    isPositive: false,
-    open: 643.08,
-    high: 644.54,
-    low: 607.55,
-    vol: '8.23M',
+    currentPrice: 0,
+    change: '0.00%',
+    isPositive: true,
+    open: 0,
+    high: 0,
+    low: 0,
+    vol: '0',
     description: 'Bleached Hardwood Kraft Pulp (BHKP) is short-fiber pulp used for manufacturing various paper and packaging products.',
-    history: [
-      { date: '10/08/2026', price: 610.00, open: 643.08, high: 644.54, low: 607.55, vol: '8.23M', change: '-5.40%' },
-      { date: '07/08/2026', price: 644.80, open: 639.71, high: 646.75, low: 635.96, vol: '2.75M', change: '+0.60%' },
-      { date: '06/08/2026', price: 640.93, open: 644.06, high: 646.20, low: 638.09, vol: '6.14M', change: '-0.24%' },
-      { date: '05/08/2026', price: 642.44, open: 644.19, high: 647.62, low: 641.34, vol: '1.59M', change: '+0.01%' },
-      { date: '04/08/2026', price: 642.35, open: 640.52, high: 645.80, low: 639.12, vol: '5.93M', change: '+0.21%' },
-    ]
+    history: []
   },
   recycled: {
     name: 'Recycled Paper',
     unit: 'EUR / MT',
-    currentPrice: 129.00,
-    change: '-0.14%',
-    isPositive: false,
-    open: 128.85,
-    high: 129.62,
-    low: 127.78,
-    vol: '3.06M',
+    currentPrice: 0,
+    change: '0.00%',
+    isPositive: true,
+    open: 0,
+    high: 0,
+    low: 0,
+    vol: '0',
     description: 'Recycled paper produced by reprocessing paper and cardboard waste into eco-friendly new products.',
-    history: [
-      { date: '10/08/2026', price: 129.00, open: 128.85, high: 129.62, low: 127.78, vol: '3.06M', change: '-0.14%' },
-      { date: '07/08/2026', price: 129.18, open: 128.89, high: 129.32, low: 128.69, vol: '2.78M', change: '+0.36%' },
-      { date: '06/08/2026', price: 128.72, open: 129.48, high: 129.79, low: 127.98, vol: '4.48M', change: '-0.61%' },
-      { date: '05/08/2026', price: 129.51, open: 129.21, high: 129.84, low: 128.46, vol: '1.99M', change: '+0.54%' },
-      { date: '04/08/2026', price: 128.81, open: 128.24, high: 129.90, low: 127.55, vol: '2.97M', change: '+0.33%' },
-    ]
+    history: []
   },
   woodIDN: {
     name: 'Wood (Paper) IDN',
     unit: 'IDR / Share',
-    currentPrice: 218.00,
+    currentPrice: 0,
     change: '0.00%',
     isPositive: true,
-    open: 218.00,
-    high: 222.00,
-    low: 214.00,
-    vol: '479.70K',
+    open: 0,
+    high: 0,
+    low: 0,
+    vol: '0',
     description: 'Indonesian local timber commodity index for domestic paper industry and manufacturing raw materials.',
-    history: [
-      { date: '07/08/2026', price: 218.00, open: 218.00, high: 222.00, low: 214.00, vol: '479.70K', change: '0.00%' },
-      { date: '06/08/2026', price: 218.00, open: 220.00, high: 222.00, low: 208.00, vol: '6.58M', change: '-0.91%' },
-      { date: '05/08/2026', price: 220.00, open: 220.00, high: 228.00, low: 216.00, vol: '4.21M', change: '0.00%' },
-      { date: '04/08/2026', price: 220.00, open: 238.00, high: 238.00, low: 220.00, vol: '7.65M', change: '-6.78%' },
-      { date: '03/08/2026', price: 236.00, open: 236.00, high: 240.00, vol: '1.97M', low: 230.00, change: '0.00%' },
-    ]
+    history: []
   }
 };
 
-export default function MarketPrice({ changePage, onLogout }) {
-  const { hasPermission, user } = useRole();
+export default function MarketPrice({ changePage, onLogout, activePage = 'marketPrice' }) {  const { hasPermission, user } = useRole();
   const canManageUsers = hasPermission('manage_users');
-  // profile lama dihapus (hardcode) - sekarang pakai `user` dari RoleContext
+  const isAdmin = user?.role_id === 1;
   const [showProfileCard, setShowProfileCard] = useState(false);
   const profileRef = useRef(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   
-  const [isDarkMode, setIsDarkMode] = useState(true);
+// === 3. UI & PROFILE STATE ===
+const [isDarkMode, setIsDarkMode] = useState(() => {
+  const savedTheme = localStorage.getItem('theme');
+  return savedTheme !== null ? savedTheme === 'dark' : false;
+});
+
+// Efek untuk menyimpan perubahan tema agar tersinkronisasi antar halaman
+useEffect(() => {
+  localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+}, [isDarkMode]);  
+  // STATE BARU UNTUK MENAMPILKAN POPUP KONFIRMASI RESET
+  const [showResetModal, setShowResetModal] = useState(false);
 
   const [commodities, setCommodities] = useState(() => {
     const savedData = localStorage.getItem('detpak_commodities');
@@ -255,10 +242,10 @@ export default function MarketPrice({ changePage, onLogout }) {
         return JSON.parse(savedData);
       } catch (e) {
         console.error("Gagal membaca data dari localStorage", e);
-        return defaultCommodities;
+        return emptyCommodities;
       }
     }
-    return defaultCommodities;
+    return emptyCommodities;
   });
 
   useEffect(() => {
@@ -269,12 +256,11 @@ export default function MarketPrice({ changePage, onLogout }) {
   const [timeFilter, setTimeFilter] = useState('All'); 
   const activeItem = commodities[selectedKey];
 
-  // === FUNGSI IMPORT EXCEL (PERBAIKAN HEADER & FORMAT PERSENTASE) ===
   const handleFileUpload = (e) => {
+    if (!isAdmin) return;
     const file = e.target.files[0];
     if (!file) return;
 
-    // Helper: Pastikan angka bersih dari koma ribuan
     const parseNumber = (val) => {
       if (typeof val === 'number') return val;
       if (typeof val === 'string') {
@@ -283,7 +269,6 @@ export default function MarketPrice({ changePage, onLogout }) {
       return 0;
     };
 
-    // Helper: Tangani format persentase (karena excel sering convert persentase ke desimal)
     const formatChange = (val) => {
       if (typeof val === 'number') {
         const percentage = (val * 100).toFixed(2);
@@ -300,7 +285,6 @@ export default function MarketPrice({ changePage, onLogout }) {
       const wsname = wb.SheetNames[0];
       const ws = wb.Sheets[wsname];
       
-      // 1. Deteksi Baris Header yang Sebenarnya
       const rawData = XLSX.utils.sheet_to_json(ws, { header: 1 });
       let startRow = 0;
       for (let i = 0; i < Math.min(10, rawData.length); i++) {
@@ -311,13 +295,11 @@ export default function MarketPrice({ changePage, onLogout }) {
         }
       }
 
-      // 2. Ekstrak data dimulai tepat dari baris header (menghindari baris judul di atasnya)
       const data = XLSX.utils.sheet_to_json(ws, { range: startRow, cellDates: true });
       
       if (data.length > 0) {
         const latest = data[0]; 
         
-        // Memfasilitasi header multi-bahasa (Inggris/Indonesia) atau dari sumber yang beda penamaannya
         setCommodities(prev => ({
           ...prev,
           [selectedKey]: {
@@ -352,7 +334,6 @@ export default function MarketPrice({ changePage, onLogout }) {
           }
         }));
         
-        // ✅ TAMBAHAN: POST setiap market price ke backend
         data.forEach(row => {
           const changePercent = parseFloat(row.change || row.Change || row['Change %'] || row['Perubahan%']) || 0;
           const recordedDate = row.date || row.Date || row['Tanggal'] || new Date().toISOString().split('T')[0];
@@ -371,45 +352,23 @@ export default function MarketPrice({ changePage, onLogout }) {
     e.target.value = null; 
   };
 
-  // ✅ TAMBAHAN: Fungsi async untuk POST Market Price ke backend
   const saveMarketPriceToBackend = async (priceData) => {
     try {
-      // ✅ Helper: Konversi berbagai format tanggal ke YYYY-MM-DD
       const formatDateToYYYYMMDD = (dateInput) => {
         if (!dateInput) return new Date().toISOString().split('T')[0];
-        
-        // Jika sudah string YYYY-MM-DD, return as is
-        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
-          return dateInput;
-        }
-        
-        // Jika ISO datetime string (2025-06-30T16:59:48.000Z)
-        if (typeof dateInput === 'string' && dateInput.includes('T')) {
-          return dateInput.split('T')[0];
-        }
-        
-        // Jika Date object
-        if (dateInput instanceof Date) {
-          return dateInput.toISOString().split('T')[0];
-        }
-        
-        // Jika string format lain, coba parse
+        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
+        if (typeof dateInput === 'string' && dateInput.includes('T')) return dateInput.split('T')[0];
+        if (dateInput instanceof Date) return dateInput.toISOString().split('T')[0];
         if (typeof dateInput === 'string') {
           const date = new Date(dateInput);
-          if (!isNaN(date)) {
-            return date.toISOString().split('T')[0];
-          }
+          if (!isNaN(date)) return date.toISOString().split('T')[0];
         }
-        
-        // Default: hari ini
         return new Date().toISOString().split('T')[0];
       };
 
       const response = await fetch('http://localhost:5000/api/market-prices', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           item_name: priceData.item_name || 'Unknown',
           price: priceData.price || 0,
@@ -419,14 +378,7 @@ export default function MarketPrice({ changePage, onLogout }) {
         })
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Backend error:', errorData);
-        return false;
-      }
-
-      const result = await response.json();
-      console.log('✅ Market Price berhasil disimpan ke database:', result);
+      if (!response.ok) return false;
       return true;
     } catch (error) {
       console.error('❌ Error saat POST ke backend:', error);
@@ -456,7 +408,6 @@ export default function MarketPrice({ changePage, onLogout }) {
     else if (changePage) changePage('login');
   };
 
-  // === LOGIKA FILTER WAKTU GRAFIK ===
   const getFilteredHistory = (history) => {
     if (timeFilter === 'All') return history;
     if (!history || history.length === 0) return history;
@@ -481,19 +432,26 @@ export default function MarketPrice({ changePage, onLogout }) {
     return history.filter(h => parseDate(h.date) >= cutoffTime);
   };
 
-  const filteredHistory = getFilteredHistory(activeItem.history);
+  const filteredHistory = getFilteredHistory(activeItem?.history || []);
 
-  const handleResetData = () => {
-    if (window.confirm("Apakah Anda yakin ingin mereset data kembali ke versi awal (default)? Semua data excel yang telah diupload akan hilang.")) {
-      setCommodities(defaultCommodities);
-      localStorage.removeItem('detpak_commodities');
-    }
+  // FUNGSI UNTUK MENAMPILKAN MODAL
+  const handleResetDataClick = () => {
+    if (!isAdmin) return;
+    setShowResetModal(true);
+  };
+
+  // FUNGSI UNTUK MENGEKSEKUSI PENGHAPUSAN
+  const confirmResetData = () => {
+    setCommodities(emptyCommodities);
+    localStorage.removeItem('detpak_commodities');
+    setShowResetModal(false);
   };
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
       
       {/* HEADER UTAMA */}
+{/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
@@ -503,35 +461,35 @@ export default function MarketPrice({ changePage, onLogout }) {
                 alt="Detpak Logo" 
                 className="h-12 w-auto object-contain" 
               />
-            </div>            
+            </div>
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              <button onClick={() => changePage?.('marketPrice')} className="bg-[#E31837] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Market Price</button>
+              {/* Market Price tetap menyala merah karena kita berada di halaman Market Price */}
+              <button onClick={() => changePage?.('marketprice')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
               <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-        
             </nav>
           </div>
 
           <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`}
               title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             >
               <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
             </button>
-            
+
             <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
               <i className="fa-regular fa-clock text-blue-500"></i>
               <span>{formattedTime}</span>
             </div>
 
             <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
+              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
                 {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
-              
+
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
@@ -540,8 +498,8 @@ export default function MarketPrice({ changePage, onLogout }) {
                     </div>
                     <div className="overflow-hidden">
                       <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || '-'}</h4>
-                      <p className="text-sm text-gray-400 truncate">{user?.email || '-'}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || '-'}</span>
+                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
+                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
                     </div>
                   </div>
                   <div className="pt-2 space-y-1">
@@ -569,37 +527,58 @@ export default function MarketPrice({ changePage, onLogout }) {
       </header>
 
       {/* BODY SIDEBAR & CONTENT */}
-      <div className="flex flex-1 overflow-hidden">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* === SIDEBAR === */}
+        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
+          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
+        }`}>
           <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-            </button>
-            <button onClick={() => changePage && changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
-            </button>
-            <button onClick={() => changePage && changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
-            </button>
-            <button onClick={() => changePage && changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
-            </button>
-            <button onClick={() => changePage && changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
-            </button>
-            <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
-            </button>
+            {[
+              { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
+              { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
+              { id: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
+              { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
+              { id: 'report', label: 'Report', icon: 'fa-file-lines' },
+              { id: 'settings', label: 'Settings', icon: 'fa-gear' },
+            ].map((item) => {
+              const isActive = activePage === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => changePage?.(item.id)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+                    isActive
+                      ? 'bg-[#E31837] text-white font-bold shadow-xs'
+                      : isDarkMode
+                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
+                  }`}
+                >
+                  <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
+                </button>
+              );
+            })}
 
+            {/* Menu Khusus User Management */}
             {canManageUsers && (
-              <button onClick={() => changePage && changePage('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+              <button
+                onClick={() => changePage?.('userManagement')}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+                  activePage === 'userManagement'
+                    ? 'bg-[#E31837] text-white font-bold shadow-xs'
+                    : isDarkMode
+                    ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
+                    : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
+                }`}
+              >
                 <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
               </button>
             )}
           </nav>
         </aside>
 
-        <main className="flex-1 overflow-y-auto p-8 space-y-6">
+        {/* ... (TETAPKAN KODE <main> DI BAWAH INI SESUAI ASLINYA) ... */}
+        <main className="flex-1 overflow-y-auto p-8 space-y-6 relative">
           <div className="flex justify-between items-end">
             <div>
               <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Global Commodity Market Price</h1>
@@ -607,22 +586,26 @@ export default function MarketPrice({ changePage, onLogout }) {
             </div>
             
             <div className="flex items-center gap-3">
-              <button 
-                onClick={handleResetData}
-                className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm flex items-center gap-2 ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'}`}
-              >
-                <i className="fa-solid fa-rotate-left"></i> Reset
-              </button>
+              {isAdmin ? (
+                <>
+                  <button 
+                    onClick={handleResetDataClick}
+                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm flex items-center gap-2 ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'}`}
+                  >
+                    <i className="fa-solid fa-trash-can"></i> Reset
+                  </button>
 
-              <label className="cursor-pointer bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-md flex items-center gap-2">
-                <i className="fa-solid fa-file-excel"></i> Import Excel
-                <input 
-                  type="file" 
-                  accept=".xlsx, .xls, .csv" 
-                  className="hidden" 
-                  onChange={handleFileUpload} 
-                />
-              </label>
+                  <label className="cursor-pointer bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-md flex items-center gap-2">
+                    <i className="fa-solid fa-file-excel"></i> Import Excel
+                    <input 
+                      type="file" 
+                      accept=".xlsx, .xls, .csv" 
+                      className="hidden" 
+                      onChange={handleFileUpload} 
+                    />
+                  </label>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -642,9 +625,11 @@ export default function MarketPrice({ changePage, onLogout }) {
                 >
                   <p className={`text-xs font-semibold truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{item.name}</p>
                   <div className="mt-2 flex items-baseline justify-between">
-                    <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{item.currentPrice.toLocaleString('en-US')}</span>
-                    <span className={`text-xs font-semibold ${item.isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
-                      {item.change}
+                    <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {item.currentPrice === 0 ? '-' : item.currentPrice.toLocaleString('en-US')}
+                    </span>
+                    <span className={`text-xs font-semibold ${item.currentPrice === 0 ? 'text-gray-500' : item.isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
+                      {item.change === '0.00%' && item.currentPrice === 0 ? '-' : item.change}
                     </span>
                   </div>
                   <p className={`text-[11px] mt-1 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{item.unit}</p>
@@ -656,16 +641,18 @@ export default function MarketPrice({ changePage, onLogout }) {
           <div className={`p-6 border rounded-2xl shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
             <div className={`flex flex-col md:flex-row md:items-center justify-between border-b pb-4 gap-4 ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
               <div>
-                <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{activeItem.name}</h2>
-                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem.description}</p>
+                <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{activeItem?.name}</h2>
+                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.description}</p>
               </div>
               <div className="flex items-center gap-3">
                 <span className={`text-2xl font-extrabold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>
-                  {activeItem.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem.unit}</span>
+                  {activeItem?.currentPrice === 0 ? '0' : activeItem?.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.unit}</span>
                 </span>
-                <span className={`px-2.5 py-1 text-xs font-bold rounded-full ${activeItem.isPositive ? (isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950/80 text-red-400 border border-red-800' : 'bg-red-100 text-red-700')}`}>
-                  {activeItem.change}
-                </span>
+                {activeItem?.currentPrice !== 0 && (
+                  <span className={`px-2.5 py-1 text-xs font-bold rounded-full ${activeItem?.isPositive ? (isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950/80 text-red-400 border border-red-800' : 'bg-red-100 text-red-700')}`}>
+                    {activeItem?.change}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -691,25 +678,25 @@ export default function MarketPrice({ changePage, onLogout }) {
                   ))}
                 </div>
               </div>
-              <CommodityChart history={filteredHistory} isDarkMode={isDarkMode} unit={activeItem.unit} />
+              <CommodityChart history={filteredHistory} isDarkMode={isDarkMode} unit={activeItem?.unit} />
             </div>
 
             <div className={`grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
               <div>
                 <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Open Price</span>
-                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem.open}</span>
+                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.open || '-'}</span>
               </div>
               <div>
                 <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>High Price</span>
-                <span className="text-base font-semibold text-emerald-500">{activeItem.high}</span>
+                <span className="text-base font-semibold text-emerald-500">{activeItem?.high || '-'}</span>
               </div>
               <div>
                 <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Low Price</span>
-                <span className="text-base font-semibold text-red-500">{activeItem.low}</span>
+                <span className="text-base font-semibold text-red-500">{activeItem?.low || '-'}</span>
               </div>
               <div>
                 <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Trading Volume</span>
-                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem.vol}</span>
+                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.vol || '-'}</span>
               </div>
             </div>
           </div>
@@ -717,7 +704,6 @@ export default function MarketPrice({ changePage, onLogout }) {
           <div className={`border rounded-2xl shadow-xs overflow-hidden pb-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
             <div className={`px-6 py-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
               <h3 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Commodity Price History</h3>
-              <span className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Data Source: Market Feed (August 2026)</span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm whitespace-nowrap">
@@ -733,25 +719,65 @@ export default function MarketPrice({ changePage, onLogout }) {
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
-                  {filteredHistory.map((row, idx) => (
-                    <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                      <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{row.date}</td>
-                      <td className={`px-6 py-3.5 font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>{row.price}</td>
-                      <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.open}</td>
-                      <td className="px-6 py-3.5 text-emerald-500 font-medium">{row.high}</td>
-                      <td className="px-6 py-3.5 text-red-500 font-medium">{row.low}</td>
-                      <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.vol}</td>
-                      <td className={`px-6 py-3.5 font-semibold ${row.change && row.change.startsWith('+') ? 'text-emerald-500' : row.change && row.change.startsWith('-') ? 'text-red-500' : isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>
-                        {row.change}
+                  {filteredHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" className={`px-6 py-10 text-center font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                        <i className="fa-solid fa-folder-open text-3xl mb-3 block"></i>
+                        Belum ada data histori. Silakan klik tombol "Import Excel" di atas.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    filteredHistory.map((row, idx) => (
+                      <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                        <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{row.date}</td>
+                        <td className={`px-6 py-3.5 font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>{row.price}</td>
+                        <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.open}</td>
+                        <td className="px-6 py-3.5 text-emerald-500 font-medium">{row.high}</td>
+                        <td className="px-6 py-3.5 text-red-500 font-medium">{row.low}</td>
+                        <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.vol}</td>
+                        <td className={`px-6 py-3.5 font-semibold ${row.change && row.change.startsWith('+') ? 'text-emerald-500' : row.change && row.change.startsWith('-') ? 'text-red-500' : isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>
+                          {row.change}
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
           </div>
         </main>
       </div>
+
+      {/* POPUP KONFIRMASI RESET */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+          <div className={`w-full max-w-sm p-6 rounded-2xl shadow-2xl animate-fade-in-up ${isDarkMode ? 'bg-[#1E293B] border border-slate-700' : 'bg-white border border-gray-200'}`}>
+            <div className="flex flex-col items-center text-center">
+              <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 ${isDarkMode ? 'bg-red-500/20' : 'bg-red-100'}`}>
+                <i className="fa-solid fa-triangle-exclamation text-2xl text-red-500"></i>
+              </div>
+              <h3 className={`text-xl font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Konfirmasi Hapus Data</h3>
+              <p className={`text-sm mb-6 ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                Apakah Anda yakin ingin <span className="font-bold text-red-500">MENGHAPUS SEMUA DATA</span>? Layar dan grafik akan dikosongkan secara permanen.
+              </p>
+              <div className="flex items-center gap-3 w-full">
+                <button 
+                  onClick={() => setShowResetModal(false)}
+                  className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-colors ${isDarkMode ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                >
+                  Batal
+                </button>
+                <button 
+                  onClick={confirmResetData}
+                  className="flex-1 py-2.5 rounded-lg text-sm font-semibold bg-red-600 text-white hover:bg-red-700 transition-colors shadow-md"
+                >
+                  Ya, Hapus
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

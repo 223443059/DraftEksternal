@@ -21,10 +21,14 @@ const INITIAL_FORM_STATE = {
 };
 
 export default function Suppliers({ changePage, onLogout }) {
-  const { hasPermission } = useRole();
+  // === MENGAMBIL DATA USER DARI CONTEXT ===
+  const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
+  
+  // === LOGIKA PENGECEKAN VIEWER (USER) ===
+  const isViewer = user?.role?.toLowerCase() === 'user' || user?.role?.toLowerCase() === 'viewer';
 
-  // === 1. SUPPLIER & PROFILE DATA STATE (PERSISTENT VIA LOCALSTORAGE) ===
+  // === 1. SUPPLIER DATA STATE (PERSISTENT VIA LOCALSTORAGE) ===
   const [suppliers, setSuppliers] = useState(() => {
     const savedSuppliers = localStorage.getItem('dataSuppliersLadeuV3');
     if (savedSuppliers) {
@@ -34,16 +38,7 @@ export default function Suppliers({ changePage, onLogout }) {
         console.error("Failed to read supplier data:", e);
       }
     }
-    return []; // Fallback array kosong agar tidak undefined saat pertama kali dibuka
-  });
-
-  const [profile] = useState(() => {
-    const savedProfile = localStorage.getItem('appProfile');
-    return savedProfile ? JSON.parse(savedProfile) : {
-      name: 'Ladeu Intern',
-      email: 'intern@ladeu.com',
-      role: 'Procurement Admin'
-    };
+    return [];
   });
 
   // === 2. INTERACTIVITY & CLOCK STATE ===
@@ -55,10 +50,48 @@ export default function Suppliers({ changePage, onLogout }) {
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
   const [currentTime, setCurrentTime] = useState(new Date());
   
+  // === TOAST NOTIFICATION STATE ===
+  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
+  const [isSupplierMenuOpen, setIsSupplierMenuOpen] = useState(true);
+
+  // Ambil status buka/tutup menu Supplier dari database saat komponen dimuat
+  useEffect(() => {
+    if (!user?.id) return;
+    fetch(`http://localhost:5000/api/preferences/${user.id}/sidebarSupplierOpen`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.value !== null && typeof data.value !== 'undefined') {
+          setIsSupplierMenuOpen(!!data.value);
+        }
+      })
+      .catch((err) => console.error('Gagal mengambil preferensi menu Supplier:', err));
+  }, [user?.id]);
+
+  // Toggle menu Supplier sekaligus simpan ke database
+  const toggleSupplierMenu = () => {
+    setIsSupplierMenuOpen((prev) => {
+      const next = !prev;
+      if (user?.id) {
+        fetch(`http://localhost:5000/api/preferences/${user.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: 'sidebarSupplierOpen', value: next })
+        }).catch((err) => console.error('Gagal menyimpan preferensi menu Supplier:', err));
+      }
+      return next;
+    });
+  };
+  const [supplierTab, setSupplierTab] = useState('list');
+
+  const showToast = (message, type = 'success') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+  };
+  
   // === DARK MODE STATE (PERSISTENT VIA LOCALSTORAGE) ===
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    const savedTheme = localStorage.getItem('appTheme');
-    return savedTheme !== null ? JSON.parse(savedTheme) : true;
+    const savedTheme = localStorage.getItem('theme');
+    return savedTheme !== null ? savedTheme === 'dark' : false;
   });
 
   const profileRef = useRef(null);
@@ -70,12 +103,10 @@ export default function Suppliers({ changePage, onLogout }) {
     return () => clearInterval(timer);
   }, []);
 
-  // Simpan pilihan tema mode gelap/terang secara otomatis ke LocalStorage
   useEffect(() => {
-    localStorage.setItem('appTheme', JSON.stringify(isDarkMode));
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
-  // Simpan data supplier secara otomatis setiap kali ada perubahan
   useEffect(() => {
     localStorage.setItem('dataSuppliersLadeuV3', JSON.stringify(suppliers));
   }, [suppliers]);
@@ -89,6 +120,46 @@ export default function Suppliers({ changePage, onLogout }) {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  const fetchSuppliersFromBackend = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/api/suppliers');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          const formattedData = data.map((item, index) => ({
+            id: item.id || Date.now() + index,
+            supplierId: item.supplier_code || item.supplierId || '-',
+            name: item.name || '',
+            prefix: (item.name || 'UN').substring(0, 2).toUpperCase(),
+            color: item.color || "bg-red-600 text-white",
+            phone: item.phone || '-',
+            city: item.city || '-',
+            taxId: item.tax_id || item.taxId || '-',
+            status: item.status || "Active",
+            address: item.address || '-',
+            address2: item.address2 || '-',
+            address3: item.address3 || '-',
+            stateProv: item.stateProv || item.state_prov || '-',
+            postalCode: item.postalCode || item.postal_code || '-',
+            country: item.country || '-',
+            alamatLengkap: item.alamatLengkap || item.alamat_lengkap || '-',
+            currencyId: item.currencyId || item.currency_id || '-',
+            termsId: item.termsId || item.terms_id || '-'
+          }));
+          setSuppliers(formattedData);
+        }
+      }
+    } catch (err) {
+      console.error("Gagal mengambil data supplier dari backend:", err);
+    }
+  };
+
+  // Fetch data supplier dari backend saat pertama kali render
+  useEffect(() => {
+    fetchSuppliersFromBackend();
+  }, []);
+
 
   // === 4. HANDLERS ===
   const handleLogout = () => {
@@ -109,59 +180,114 @@ export default function Suppliers({ changePage, onLogout }) {
     setEditId(null);
   };
 
-  // Fungsi untuk POST data ke backend
-  const saveSupplierToBackend = async (supplierData) => {
+  const createSupplierInBackend = async (supplierData) => {
     try {
       const response = await fetch('http://localhost:5000/api/suppliers', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          // Kalau ID dari Excel kosong/'-', jangan kirim supplier_code sama sekali
+          // supaya backend yang generate kode unik sendiri (hindari duplicate key)
+          supplier_code: (supplierData.supplierId && supplierData.supplierId !== '-')
+            ? supplierData.supplierId
+            : undefined,
+          name: supplierData.name,
+          phone: supplierData.phone !== '-' ? supplierData.phone : '',
+          city: supplierData.city !== '-' ? supplierData.city : '',
+          address: supplierData.address !== '-' ? supplierData.address : '',
+          tax_id: supplierData.taxId !== '-' ? supplierData.taxId : '',
+          status: 'Active'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Backend error (create):', errorData);
+        return { success: false, message: errorData.message || 'Gagal menyimpan ke database' };
+      }
+
+      const result = await response.json();
+      return { success: true, id: result.id };
+    } catch (error) {
+      console.error('❌ Error saat POST ke backend:', error);
+      return { success: false, message: error.message };
+    }
+  };
+
+  const updateSupplierInBackend = async (id, supplierData) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/suppliers/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           supplier_code: supplierData.supplierId,
           name: supplierData.name,
           phone: supplierData.phone,
           city: supplierData.city,
+          address: supplierData.address,
           tax_id: supplierData.taxId,
-          status: 'active'
+          status: 'Active'
         })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Backend error:', errorData);
-        alert(`Error: ${errorData.error || 'Gagal menyimpan ke database'}`);
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Backend error (update):', errorData);
+        showToast(`Error: ${errorData.message || 'Gagal update ke database'}`, 'error');
         return false;
       }
-
-      const result = await response.json();
-      console.log('✅ Supplier berhasil disimpan ke database:', result);
-      alert('✅ Supplier berhasil disimpan!');
       return true;
     } catch (error) {
-      console.error('❌ Error saat POST ke backend:', error);
-      alert(`❌ Error: ${error.message}`);
+      console.error('❌ Error saat PUT ke backend:', error);
+      showToast(`Error: ${error.message}`, 'error');
       return false;
     }
   };
 
-  const handleSubmitEdit = (e) => {
+  const deleteSupplierInBackend = async (id) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/suppliers/${id}`, {
+        method: 'DELETE'
+      });
+      return response.ok;
+    } catch (error) {
+      console.error('❌ Error saat DELETE ke backend:', error);
+      return false;
+    }
+  };
+
+  const handleSubmitEdit = async (e) => {
     e.preventDefault();
     
     if (!formData.name.trim() || !formData.supplierId.trim()) {
-      alert("Supplier ID and Name are required!");
+      showToast("Supplier ID and Name are required!", 'error');
       return;
+    }
+
+    const isDuplicate = suppliers.some(s => 
+      s.id !== editId && (
+        (s.supplierId && s.supplierId !== '-' && s.supplierId.toLowerCase() === formData.supplierId.trim().toLowerCase()) ||
+        (s.name && s.name.toLowerCase() === formData.name.trim().toLowerCase())
+      )
+    );
+
+    if (isDuplicate) {
+      showToast("Data sudah ada! Supplier ID atau Nama tidak boleh duplikat.", 'error');
+      return; 
     }
 
     const calculatedPrefix = formData.name.trim().substring(0, 2).toUpperCase();
 
     if (editId) {
-      setSuppliers(prev => prev.map((supplier) => 
-        supplier.id === editId 
-          ? { ...supplier, ...formData, prefix: calculatedPrefix }
-          : supplier
-      ));
-      saveSupplierToBackend(formData);
+      const ok = await updateSupplierInBackend(editId, formData);
+      if (ok) {
+        setSuppliers(prev => prev.map((supplier) => 
+          supplier.id === editId 
+            ? { ...supplier, ...formData, prefix: calculatedPrefix }
+            : supplier
+        ));
+        showToast('Supplier berhasil diupdate!', 'success');
+      }
     }
     resetForm();
   };
@@ -189,11 +315,17 @@ export default function Suppliers({ changePage, onLogout }) {
     }
   };
 
-  const deleteSupplier = (id, name) => {
+  const deleteSupplier = async (id, name) => {
     if (window.confirm(`Are you sure you want to delete data for ${name}?`)) {
-      setSuppliers(prev => prev.filter((supplier) => supplier.id !== id));
-      if (selectedSupplier?.id === id) closeDrawer();
-      if (editId === id) resetForm();
+      const ok = await deleteSupplierInBackend(id);
+      if (ok) {
+        setSuppliers(prev => prev.filter((supplier) => supplier.id !== id));
+        if (selectedSupplier?.id === id) closeDrawer();
+        if (editId === id) resetForm();
+        showToast('Supplier berhasil dihapus!', 'success');
+      } else {
+        showToast('Gagal menghapus supplier dari database.', 'error');
+      }
     }
   };
 
@@ -202,7 +334,7 @@ export default function Suppliers({ changePage, onLogout }) {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       try {
         const data = event.target.result;
         const workbook = XLSX.read(data, { type: 'binary' });
@@ -213,49 +345,101 @@ export default function Suppliers({ changePage, onLogout }) {
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
         
         if (jsonData.length === 0) {
-          alert("Excel file is empty or formatted incorrectly!");
+          showToast("Excel file is empty or formatted incorrectly!", 'error');
           return;
         }
 
-        const newSuppliers = jsonData.map((row, index) => {
-          const name = row['Name'] || row['Nama Perusahaan'] || 'Unknown Supplier';
+        const newSuppliers = [];
+        let duplicateCount = 0;
+
+        jsonData.forEach((row, index) => {
+          const name = (row['Name'] || row['Nama Perusahaan'] || 'Unknown Supplier').toString().trim();
+          const supplierId = (row['Supplier ID'] || '-').toString().trim();
           
-          return {
-            id: Date.now() + index, 
-            prefix: name.substring(0, 2).toUpperCase(),
-            color: "bg-red-600 text-white",
-            supplierId: row['Supplier ID'] || '-',
-            name: name,
-            address: row['Address'] || '-',
-            address2: row['Address2'] || '-',
-            address3: row['Address 3'] || '-',
-            city: row['City'] || '-',
-            stateProv: row['State/Prov'] || '-',
-            postalCode: row['Postal Code'] || '-',
-            country: row['Country'] || '-',
-            alamatLengkap: row['Alamat Lengkap'] || '-',
-            currencyId: row['Currency ID'] || '-',
-            termsId: row['Terms ID'] || '-',
-            phone: row['Phone'] || '-',
-            taxId: row['Tax ID'] || '-',
-            status: "New",
-            statusColor: "bg-red-100 text-red-700",
-            spend: "$0.00",
-            monthlyTransaction: "$0.00"
-          };
+          const nameLower = name.toLowerCase();
+          const idLower = supplierId.toLowerCase();
+
+          const isDuplicate = suppliers.some(s => 
+            (s.supplierId !== '-' && s.supplierId?.toLowerCase() === idLower) ||
+            (s.name?.toLowerCase() === nameLower)
+          ) || newSuppliers.some(s => 
+            (s.supplierId !== '-' && s.supplierId?.toLowerCase() === idLower) ||
+            (s.name?.toLowerCase() === nameLower)
+          );
+
+          if (isDuplicate) {
+            duplicateCount++;
+          } else {
+            newSuppliers.push({
+              id: Date.now() + index, 
+              prefix: name.substring(0, 2).toUpperCase(),
+              color: "bg-red-600 text-white",
+              supplierId: supplierId,
+              name: name,
+              address: row['Address'] || '-',
+              address2: row['Address2'] || '-',
+              address3: row['Address 3'] || '-',
+              city: row['City'] || '-',
+              stateProv: row['State/Prov'] || '-',
+              postalCode: row['Postal Code'] || '-',
+              country: row['Country'] || '-',
+              alamatLengkap: row['Alamat Lengkap'] || '-',
+              currencyId: row['Currency ID'] || '-',
+              termsId: row['Terms ID'] || '-',
+              phone: row['Phone'] || '-',
+              taxId: row['Tax ID'] || '-',
+              status: "New",
+              statusColor: "bg-red-100 text-red-700",
+              spend: "$0.00",
+              monthlyTransaction: "$0.00"
+            });
+          }
         });
 
-        setSuppliers(prev => [...prev, ...newSuppliers]);
-        
-        newSuppliers.forEach(supplier => {
-          saveSupplierToBackend(supplier);
-        });
-        
-        alert(`${newSuppliers.length} supplier record(s) added successfully!`);
+        if (newSuppliers.length === 0 && duplicateCount > 0) {
+          showToast(`Gagal! Semua data (${duplicateCount}) sudah ada (duplikat).`, 'error');
+          e.target.value = null;
+          return;
+        }
+
+        if (newSuppliers.length > 0) {
+          showToast(`Mengimport ${newSuppliers.length} supplier ke database...`, 'success');
+
+          let successCount = 0;
+          let failCount = 0;
+
+          // Kirim satu per satu (berurutan) ke backend supaya tidak
+          // terjadi race condition / tabrakan supplier_code
+          for (const supplier of newSuppliers) {
+            const result = await createSupplierInBackend(supplier);
+            if (result.success) {
+              successCount++;
+            } else {
+              failCount++;
+              console.error(`Gagal insert supplier "${supplier.name}":`, result.message);
+            }
+          }
+
+          // Ambil ulang data terbaru langsung dari database
+          await fetchSuppliersFromBackend();
+
+          if (failCount === 0) {
+            showToast(
+              duplicateCount > 0
+                ? `${successCount} supplier berhasil diimport, ${duplicateCount} dilewati (duplikat).`
+                : `${successCount} supplier berhasil diimport ke database!`,
+              'success'
+            );
+          } else {
+            showToast(`${successCount} berhasil, ${failCount} gagal diimport. Cek console untuk detail.`, 'error');
+          }
+        } else {
+          showToast(`Gagal! Semua data (${duplicateCount}) sudah ada (duplikat).`, 'error');
+        }
         
       } catch (error) {
         console.error("Error parsing Excel:", error);
-        alert("Failed to read Excel file. Please ensure the format is correct (.xlsx or .xls).");
+        showToast("Failed to read Excel file. Please ensure the format is correct (.xlsx or .xls).", 'error');
       }
       
       e.target.value = null;
@@ -279,118 +463,176 @@ export default function Suppliers({ changePage, onLogout }) {
   });
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
-        <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img 
-                src="/images/logo.png" 
-                alt="Detpak Logo" 
-                className="h-12 w-auto object-contain" 
-              />
-            </div>            
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
-              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
-              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-            </button>
-            
-            <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
-              <i className="fa-regular fa-clock text-blue-500"></i>
-              <span>{formattedTime}</span>
+    <>
+      <style>{`
+        @keyframes slideIn {
+          from { transform: translateX(100%); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+      `}</style>
+      
+      <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+        <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
+          <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+            <div className="flex items-center gap-10 h-full">
+              <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
+                <img 
+                  src="/images/logo.png" 
+                  alt="Detpak Logo" 
+                  className="h-12 w-auto object-contain" 
+                />
+              </div>            
+              <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
+                <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
+                <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
+                <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
+                <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
+              </nav>
             </div>
 
-            <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
-                Admin <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+            <div className="flex items-center gap-6">
+              <button 
+                onClick={() => setIsDarkMode(!isDarkMode)} 
+                className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
+                title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              >
+                <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
               </button>
               
-              {showProfileCard && (
-                <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                    <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      AD
+              <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
+                <i className="fa-regular fa-clock text-blue-500"></i>
+                <span>{formattedTime}</span>
+              </div>
+
+              <div className="relative" ref={profileRef}>
+                <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
+                  {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+                </button>
+                
+                {showProfileCard && (
+                  <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
+                    <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                      <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
+                        {(user?.username || 'AD').slice(0, 2)}
+                      </div>
+                      <div className="overflow-hidden">
+                        <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || '-'}</h4>
+                        <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
+                        <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
+                      </div>
                     </div>
-                    <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{profile.name}</h4>
-                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{profile.email}</p>
-                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{profile.role}</span>
+                    <div className="pt-2 space-y-1">
+                      <button onClick={() => { setShowProfileCard(false); changePage?.('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
+                        <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
+                      </button>
+                      <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
+                        <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
+                      </button>
                     </div>
                   </div>
-                  <div className="pt-2 space-y-1">
-                    <button onClick={() => { setShowProfileCard(false); changePage?.('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
-                      <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
-                    </button>
-                    <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
-                    </button>
-                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
+            <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+              Detmold Packaging
+            </h2>
+            <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+              Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
+            </p>
+          </div>
+        </header>
+
+        <div className="flex flex-1 overflow-hidden">
+          {/* === SIDEBAR === */}
+{/* === SIDEBAR === */}
+        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+          <nav className="flex flex-col gap-2 px-4">
+            
+            {/* Navigasi Standard */}
+            <button onClick={() => changePage?.('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
+              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
+            </button>
+            
+            {/* PARENT: Supplier */}
+            <div>
+              <button
+                onClick={toggleSupplierMenu}
+                className={`w-full flex items-center justify-between px-4 py-3 text-sm font-bold rounded-xl transition-colors text-left cursor-pointer ${
+                  isSupplierMenuOpen
+                    ? 'bg-[#004797] text-white shadow-xs'
+                    : isDarkMode
+                    ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
+                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <i className="fa-solid fa-users w-5 text-lg"></i> Supplier
+                </div>
+                <i className={`fa-solid fa-chevron-${isSupplierMenuOpen ? 'down' : 'right'} text-xs transition-transform duration-200`}></i>
+              </button>
+
+              {/* CHILD: Supplier Sub-menus */}
+              {isSupplierMenuOpen && (
+                <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+                  <button
+                    onClick={() => setSupplierTab('list')}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-left cursor-pointer transition-colors ${
+                      supplierTab === 'list'
+                        ? isDarkMode ? 'text-slate-200 bg-slate-800/50' : 'text-gray-800 bg-gray-100'
+                        : isDarkMode ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="fa-solid fa-list w-4 text-center"></i> Supplier List
+                  </button>
+                  <button
+                    onClick={() => setSupplierTab('excel')}
+                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-left cursor-pointer transition-colors ${
+                      supplierTab === 'excel'
+                        ? isDarkMode ? 'text-slate-200 bg-slate-800/50' : 'text-gray-800 bg-gray-100'
+                        : isDarkMode ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="fa-solid fa-file-excel w-4 text-center"></i> Excel Upload
+                  </button>
                 </div>
               )}
             </div>
-          </div>
-        </div>
-
-        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
-          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Packaging
-          </h2>
-          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-          </p>
-        </div>
-      </header>
-
-      <div className="flex flex-1 overflow-hidden">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
-          <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage?.('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-            </button>
-            <button onClick={() => changePage?.('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white bg-[#E31837] rounded-xl transition-colors text-left cursor-pointer shadow-xs">
-              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
-            </button>
-            <button onClick={() => changePage?.('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            
+            {/* Menu Lainnya */}
+            <button onClick={() => changePage?.('purchaseOrders')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
             </button>
-            <button onClick={() => changePage?.('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage?.('analytics')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
             </button>
-            <button onClick={() => changePage?.('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage?.('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
-            <button onClick={() => changePage?.('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+            <button onClick={() => changePage?.('settings')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
 
             {canManageUsers && (
-              <button onClick={() => changePage?.('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+              <button onClick={() => changePage?.('userManagement')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300' : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700'}`}>
                 <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
               </button>
             )}
           </nav>
         </aside>
+                  <main className="flex-1 overflow-y-auto p-8 relative">
+            <div className="flex justify-between items-start mb-8">
+              <div>
+                <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>
+                  {supplierTab === 'excel' ? 'Excel Upload' : 'Suppliers Management'}
+                </h1>
+                <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                  {supplierTab === 'excel' ? 'Import data supplier dari file Excel.' : 'Manage detailed supplier information.'}
+                </p>
+              </div>
 
-        <main className="flex-1 overflow-y-auto p-8 relative">
-          <div className="flex justify-between items-start mb-8">
-            <div>
-              <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Suppliers Management</h1>
-              <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Manage detailed supplier information.</p>
-            </div>
-            
-            <div>
               <input 
                 type="file" 
                 ref={fileInputRef} 
@@ -398,246 +640,308 @@ export default function Suppliers({ changePage, onLogout }) {
                 accept=".xlsx, .xls" 
                 className="hidden" 
               />
-              <button 
-                onClick={() => fileInputRef.current.click()} 
-                className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer shadow-sm"
-              >
-                <i className="fa-solid fa-file-excel"></i> 
-                Upload Data via Excel
-              </button>
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-            <div className={`p-4 rounded-xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className={`text-sm mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total Suppliers</div>
-              <div className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>{suppliers.length}</div>
-            </div>
-            <div className={`p-4 rounded-xl border shadow-xs relative overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className={`text-sm mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Active Suppliers</div>
-              <div className={`text-2xl font-bold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>
-                {suppliers.filter(s => s.status === 'Active' || s.status === 'New' || s.status === 'Aktif' || s.status === 'Baru').length} 
-                <span className="w-3 h-3 bg-red-500 rounded-full inline-block"></span>
+            {supplierTab === 'list' && (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+              <div className={`p-4 rounded-xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className={`text-sm mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total Suppliers</div>
+                <div className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>{suppliers.length}</div>
               </div>
-            </div>
-          </div> 
-
-          <div className="flex flex-col lg:flex-row gap-6">
-            <div className={`flex-1 border shadow-xs rounded-xl p-5 overflow-hidden transition-all duration-300 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className="flex justify-between items-center mb-5">
-                <h2 className={`text-lg font-semibold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>
-                  <i className={`fa-regular fa-file-lines ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}></i> All Suppliers List
-                </h2>
-                <div className="relative">
-                  <i className={`fa-solid fa-search absolute left-3 top-2.5 text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}></i>
-                  <input 
-                    type="text" 
-                    placeholder="Search Suppliers..." 
-                    value={searchQuery} 
-                    onChange={(e) => setSearchQuery(e.target.value)} 
-                    className={`pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:border-red-500 ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'border-gray-300 text-gray-900 bg-white'}`} 
-                  />
+              <div className={`p-4 rounded-xl border shadow-xs relative overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className={`text-sm mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Active Suppliers</div>
+                <div className={`text-2xl font-bold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>
+                  {suppliers.filter(s => s.status === 'Active' || s.status === 'New' || s.status === 'Aktif' || s.status === 'Baru' || s.status === 'active').length} 
+                  <span className="w-3 h-3 bg-red-500 rounded-full inline-block"></span>
                 </div>
               </div>
+            </div> 
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm whitespace-nowrap">
-                  <thead>
-                    <tr className={`border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A] text-slate-400' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
-                      <th className="py-3 font-medium px-3">Supplier ID</th>
-                      <th className="py-3 font-medium px-3">Name</th>
-                      <th className="py-3 font-medium px-3">Phone</th>
-                      <th className="py-3 font-medium px-3">City</th>
-                      <th className="py-3 font-medium px-3">Tax ID</th>
-                      <th className="py-3 font-medium text-center px-3">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
-                    {filteredSuppliers.length === 0 ? (
-                      <tr>
-                        <td colSpan="6" className={`py-8 text-center ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                          {searchQuery ? `No suppliers match "${searchQuery}".` : 'No supplier data available. Please upload an Excel file.'}
-                        </td>
+            <div className="flex flex-col lg:flex-row gap-6">
+              <div className={`flex-1 border shadow-xs rounded-xl p-5 overflow-hidden transition-all duration-300 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="flex justify-between items-center mb-5">
+                  <h2 className={`text-lg font-semibold flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>
+                    <i className={`fa-regular fa-file-lines ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}></i> All Suppliers List
+                  </h2>
+                  <div className="relative">
+                    <i className={`fa-solid fa-search absolute left-3 top-2.5 text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}></i>
+                    <input 
+                      type="text" 
+                      placeholder="Search Suppliers..." 
+                      value={searchQuery} 
+                      onChange={(e) => setSearchQuery(e.target.value)} 
+                      className={`pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:border-red-500 ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'border-gray-300 text-gray-900 bg-white'}`} 
+                    />
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap">
+                    <thead>
+                      <tr className={`border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A] text-slate-400' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                        <th className="py-3 font-medium px-3">Supplier ID</th>
+                        <th className="py-3 font-medium px-3">Name</th>
+                        <th className="py-3 font-medium px-3">Phone</th>
+                        <th className="py-3 font-medium px-3">City</th>
+                        <th className="py-3 font-medium px-3">Tax ID</th>
+                        <th className="py-3 font-medium text-center px-3">Action</th>
                       </tr>
-                    ) : (
-                      filteredSuppliers.map((item) => (
-                        <tr key={item.id} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                          <td className="py-3 px-3 font-medium text-blue-400">{item.supplierId || '-'}</td>
-                          <td className={`py-3 px-3 flex items-center gap-3 min-w-[200px] cursor-pointer ${isDarkMode ? 'hover:text-red-400' : 'hover:text-red-600'}`} onClick={() => handleViewSupplier(item)}>
-                            <div className={`w-8 h-8 rounded-full ${item.color || 'bg-red-600 text-white'} flex items-center justify-center font-bold text-xs shrink-0 overflow-hidden`}>
-                              {item.prefix}
-                            </div>
-                            <span className="font-medium truncate">{item.name}</span>
-                          </td>
-                          <td className="py-3 px-3">{item.phone || '-'}</td>
-                          <td className="py-3 px-3">{item.city || '-'}</td>
-                          <td className="py-3 px-3">{item.taxId || '-'}</td>
-                          <td className="py-3 px-3 text-center">
-                            <button onClick={() => editSupplier(item.id)} className={`text-base mr-3 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-blue-400' : 'text-gray-500 hover:text-blue-600'}`} title="Edit">
-                              <i className="fa-regular fa-pen-to-square"></i>
-                            </button>
-                            <button onClick={() => deleteSupplier(item.id, item.name)} className="text-red-500 hover:text-red-700 text-base transition-colors cursor-pointer" title="Delete">
-                              <i className="fa-regular fa-trash-can"></i>
-                            </button>
+                    </thead>
+                    <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
+                      {filteredSuppliers.length === 0 ? (
+                        <tr>
+                          <td colSpan="6" className={`py-8 text-center ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                            {searchQuery ? `No suppliers match "${searchQuery}".` : 'No supplier data available. Please upload an Excel file.'}
                           </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ) : (
+                        filteredSuppliers.map((item) => (
+                          <tr key={item.id} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                            <td className="py-3 px-3 font-medium text-blue-400">{item.supplierId || '-'}</td>
+                            <td className={`py-3 px-3 flex items-center gap-3 min-w-[200px] cursor-pointer ${isDarkMode ? 'hover:text-red-400' : 'hover:text-red-600'}`} onClick={() => handleViewSupplier(item)}>
+                              <div className={`w-8 h-8 rounded-full ${item.color || 'bg-red-600 text-white'} flex items-center justify-center font-bold text-xs shrink-0 overflow-hidden`}>
+                                {item.prefix}
+                              </div>
+                              <span className="font-medium truncate">{item.name}</span>
+                            </td>
+                            <td className="py-3 px-3">{item.phone || '-'}</td>
+                            <td className="py-3 px-3">{item.city || '-'}</td>
+                            <td className="py-3 px-3">{item.taxId || '-'}</td>
+                            <td className="py-3 px-3 text-center">
+                              <button className={`text-base mr-3 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-blue-400' : 'text-gray-500 hover:text-blue-600'}`} title="History">
+                                <i className="fa-solid fa-clock-rotate-left"></i>
+                              </button>
+                              
+                              {!isViewer ? (
+                                <>
+                                  <button onClick={() => editSupplier(item.id)} className={`text-base mr-3 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-blue-400' : 'text-gray-500 hover:text-blue-600'}`} title="Edit">
+                                    <i className="fa-regular fa-pen-to-square"></i>
+                                  </button>
+                                  <button onClick={() => deleteSupplier(item.id, item.name)} className="text-red-500 hover:text-red-700 text-base transition-colors cursor-pointer" title="Delete">
+                                    <i className="fa-regular fa-trash-can"></i>
+                                  </button>
+                                </>
+                              ) : (
+                                <button onClick={() => handleViewSupplier(item)} className={`text-base transition-colors cursor-pointer ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-500 hover:text-blue-700'}`} title="Info">
+                                  <i className="fa-solid fa-circle-info"></i>
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
 
-            {editId !== null && (
-              <div className={`w-full lg:w-80 border shadow-xs rounded-xl p-5 h-fit max-h-[80vh] overflow-y-auto relative shrink-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <button onClick={resetForm} className={`absolute top-4 right-4 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
-                  <i className="fa-solid fa-xmark"></i>
-                </button>
-                <h2 className={`text-lg font-semibold mb-4 pr-6 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Edit Supplier</h2>
-                <form onSubmit={handleSubmitEdit} className="space-y-3">
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Supplier ID *</label>
-                    <input type="text" name="supplierId" value={formData.supplierId} onChange={handleInputChange} required className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Name *</label>
-                    <input type="text" name="name" value={formData.name} onChange={handleInputChange} required className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address</label>
-                    <input type="text" name="address" value={formData.address} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address 2</label>
-                       <input type="text" name="address2" value={formData.address2} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address 3</label>
-                       <input type="text" name="address3" value={formData.address3} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>City</label>
-                       <input type="text" name="city" value={formData.city} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>State/Prov</label>
-                       <input type="text" name="stateProv" value={formData.stateProv} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Postal Code</label>
-                       <input type="text" name="postalCode" value={formData.postalCode} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Country</label>
-                       <input type="text" name="country" value={formData.country} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Alamat Lengkap</label>
-                    <textarea name="alamatLengkap" value={formData.alamatLengkap} onChange={handleInputChange} rows="2" className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none resize-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`}></textarea>
-                  </div>
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Currency ID</label>
-                       <input type="text" name="currencyId" value={formData.currencyId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                    <div className="flex-1">
-                       <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Terms ID</label>
-                       <input type="text" name="termsId" value={formData.termsId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                    </div>
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Phone</label>
-                    <input type="text" name="phone" value={formData.phone} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Tax ID</label>
-                    <input type="text" name="taxId" value={formData.taxId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
-                  </div>
-                  <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded transition-colors text-sm mt-4 cursor-pointer">
-                    Save Changes
+              {editId !== null && (
+                <div className={`w-full lg:w-80 border shadow-xs rounded-xl p-5 h-fit max-h-[80vh] overflow-y-auto relative shrink-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <button onClick={resetForm} className={`absolute top-4 right-4 transition-colors cursor-pointer ${isDarkMode ? 'text-slate-400 hover:text-red-400' : 'text-gray-400 hover:text-red-500'}`}>
+                    <i className="fa-solid fa-xmark"></i>
                   </button>
-                </form>
-              </div>
+                  <h2 className={`text-lg font-semibold mb-4 pr-6 ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Edit Supplier</h2>
+                  <form onSubmit={handleSubmitEdit} className="space-y-3">
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Supplier ID *</label>
+                      <input type="text" name="supplierId" value={formData.supplierId} onChange={handleInputChange} required className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                    </div>
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Name *</label>
+                      <input type="text" name="name" value={formData.name} onChange={handleInputChange} required className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                    </div>
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address</label>
+                      <input type="text" name="address" value={formData.address} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address 2</label>
+                         <input type="text" name="address2" value={formData.address2} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Address 3</label>
+                         <input type="text" name="address3" value={formData.address3} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>City</label>
+                         <input type="text" name="city" value={formData.city} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>State/Prov</label>
+                         <input type="text" name="stateProv" value={formData.stateProv} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Postal Code</label>
+                         <input type="text" name="postalCode" value={formData.postalCode} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Country</label>
+                         <input type="text" name="country" value={formData.country} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Alamat Lengkap</label>
+                      <textarea name="alamatLengkap" value={formData.alamatLengkap} onChange={handleInputChange} rows="2" className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none resize-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`}></textarea>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Currency ID</label>
+                         <input type="text" name="currencyId" value={formData.currencyId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                       </div>
+                      <div className="flex-1">
+                         <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Terms ID</label>
+                         <input type="text" name="termsId" value={formData.termsId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Phone</label>
+                      <input type="text" name="phone" value={formData.phone} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                    </div>
+                    <div>
+                      <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Tax ID</label>
+                      <input type="text" name="taxId" value={formData.taxId} onChange={handleInputChange} className={`w-full border rounded p-2 text-sm focus:border-red-500 focus:outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'border-gray-300 text-gray-900 bg-white'}`} />
+                    </div>
+                    <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 rounded transition-colors text-sm mt-4 cursor-pointer">
+                      Save Changes
+                    </button>
+                  </form>
+                </div>
+              )}
+                </div>
+              </>
             )}
-          </div>
-        </main>
-      </div>
 
-      {selectedSupplier && (
-        <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity duration-300" onClick={closeDrawer}></div>
-          <div className={`relative w-full max-w-sm h-full shadow-2xl flex flex-col z-50 ${isDarkMode ? 'bg-[#1E293B]' : 'bg-white'}`}>
-            <div className={`flex items-center justify-between p-6 border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A]' : 'border-gray-200 bg-gray-50'}`}>
-              <div className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-full ${selectedSupplier.color || 'bg-red-600 text-white'} flex items-center justify-center font-bold text-sm shrink-0 shadow-xs`}>
-                  {selectedSupplier.prefix || 'N/A'}
+            {supplierTab === 'excel' && (
+              <div className={`flex-1 border shadow-xs rounded-xl p-10 flex flex-col items-center justify-center text-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className={`w-16 h-16 rounded-full flex items-center justify-center text-3xl ${isDarkMode ? 'bg-emerald-900/30 text-emerald-400' : 'bg-emerald-50 text-emerald-600'}`}>
+                  <i className="fa-solid fa-file-excel"></i>
                 </div>
                 <div>
-                  <h3 className={`text-base font-bold leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{selectedSupplier.name}</h3>
-                  <p className={`text-xs flex items-center gap-1 mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    <span className={`w-2 h-2 rounded-full ${selectedSupplier.status === 'Active' || selectedSupplier.status === 'New' || selectedSupplier.status === 'Aktif' || selectedSupplier.status === 'Baru' ? 'bg-red-500' : 'bg-gray-400'}`}></span>
-                    {selectedSupplier.status || 'Active'}
+                  <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Upload Supplier Data via Excel</h2>
+                  <p className={`text-sm mt-1 max-w-md ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    Upload file .xlsx atau .xls untuk import atau memperbarui data supplier. Supplier dengan Supplier ID yang sama akan dilewati (dianggap duplikat).
                   </p>
                 </div>
+                {!isViewer && (
+                  <button
+                    onClick={() => fileInputRef.current.click()}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer shadow-sm"
+                  >
+                    <i className="fa-solid fa-upload"></i> Choose Excel File
+                  </button>
+                )}
+                <p className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Saat ini ada {suppliers.length} supplier di database.</p>
+                <button
+                  onClick={() => setSupplierTab('list')}
+                  className={`text-xs font-semibold mt-2 cursor-pointer ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'}`}
+                >
+                  <i className="fa-solid fa-arrow-left mr-1"></i> Kembali ke Supplier List
+                </button>
               </div>
-              <button onClick={closeDrawer} className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors shadow-xs focus:outline-none cursor-pointer ${isDarkMode ? 'bg-[#1E293B] border-slate-700 text-slate-400 hover:text-red-400 hover:bg-slate-800' : 'bg-white border-gray-200 text-gray-500 hover:text-red-600 hover:bg-red-50'}`}>
-                <i className="fa-solid fa-xmark"></i>
-              </button>
-            </div>
+            )}
+          </main>
+        </div>
 
-            <div className="p-6 flex-1 overflow-y-auto space-y-6">
-              <div>
-                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Supplier Information</h4>
-                <div className="space-y-4">
-                  <div className="flex items-start gap-3 text-sm">
-                    <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-id-card"></i></div>
-                    <div>
-                      <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Supplier ID / Tax ID</p>
-                      <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.supplierId} / {selectedSupplier.taxId}</p>
-                    </div>
+        {selectedSupplier && (
+          <div className="fixed inset-0 z-50 flex justify-end">
+            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity duration-300" onClick={closeDrawer}></div>
+            <div className={`relative w-full max-w-sm h-full shadow-2xl flex flex-col z-50 ${isDarkMode ? 'bg-[#1E293B]' : 'bg-white'}`}>
+              <div className={`flex items-center justify-between p-6 border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A]' : 'border-gray-200 bg-gray-50'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-full ${selectedSupplier.color || 'bg-red-600 text-white'} flex items-center justify-center font-bold text-sm shrink-0 shadow-xs`}>
+                    {selectedSupplier.prefix || 'N/A'}
                   </div>
-                  <div className="flex items-start gap-3 text-sm">
-                    <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-phone"></i></div>
-                    <div>
-                      <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Phone</p>
-                      <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.phone || '-'}</p>
-                    </div>
+                  <div>
+                    <h3 className={`text-base font-bold leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{selectedSupplier.name}</h3>
+                    <p className={`text-xs flex items-center gap-1 mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                      <span className={`w-2 h-2 rounded-full ${selectedSupplier.status === 'Active' || selectedSupplier.status === 'New' || selectedSupplier.status === 'Aktif' || selectedSupplier.status === 'Baru' || selectedSupplier.status === 'active' ? 'bg-red-500' : 'bg-gray-400'}`}></span>
+                      {selectedSupplier.status || 'Active'}
+                    </p>
                   </div>
-                  <div className="flex items-start gap-3 text-sm">
-                    <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-map-location-dot"></i></div>
-                    <div>
-                      <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Alamat Lengkap</p>
-                      <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.alamatLengkap || '-'}</p>
+                </div>
+                <button onClick={closeDrawer} className={`w-8 h-8 rounded-full border flex items-center justify-center transition-colors shadow-xs focus:outline-none cursor-pointer ${isDarkMode ? 'bg-[#1E293B] border-slate-700 text-slate-400 hover:text-red-400 hover:bg-slate-800' : 'bg-white border-gray-200 text-gray-500 hover:text-red-600 hover:bg-red-50'}`}>
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+
+              <div className="p-6 flex-1 overflow-y-auto space-y-6">
+                <div>
+                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Supplier Information</h4>
+                  <div className="space-y-4">
+                    <div className="flex items-start gap-3 text-sm">
+                      <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-id-card"></i></div>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Supplier ID / Tax ID</p>
+                        <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.supplierId} / {selectedSupplier.taxId}</p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-start gap-3 text-sm">
-                    <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-money-bill-transfer"></i></div>
-                    <div>
-                      <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Terms & Currency</p>
-                      <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.termsId} / {selectedSupplier.currencyId}</p>
+                    <div className="flex items-start gap-3 text-sm">
+                      <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-phone"></i></div>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Phone</p>
+                        <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.phone || '-'}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3 text-sm">
+                      <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-map-location-dot"></i></div>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Alamat Lengkap</p>
+                        <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.alamatLengkap || '-'}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-3 text-sm">
+                      <div className={`w-8 h-8 rounded flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-gray-100 text-gray-500'}`}><i className="fa-solid fa-money-bill-transfer"></i></div>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Terms & Currency</p>
+                        <p className={`font-medium ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{selectedSupplier.termsId} / {selectedSupplier.currencyId}</p>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
-            
-            <div className={`p-4 border-t flex gap-2 ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-              <button onClick={() => { editSupplier(selectedSupplier.id); closeDrawer(); }} className={`flex-1 border py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-300 hover:bg-slate-800' : 'bg-gray-100 border-gray-300 text-gray-700 hover:bg-gray-200'}`}>
-                Edit
-              </button>
-              <button onClick={() => deleteSupplier(selectedSupplier.id, selectedSupplier.name)} className="flex-1 bg-red-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors cursor-pointer">
-                Delete
-              </button>
+              
+              {!isViewer && (
+                <div className={`p-4 border-t flex gap-2 ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+                  <button onClick={() => { editSupplier(selectedSupplier.id); closeDrawer(); }} className={`flex-1 border py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-300 hover:bg-slate-800' : 'bg-gray-100 border-gray-300 text-gray-700 hover:bg-gray-200'}`}>
+                    Edit
+                  </button>
+                  <button onClick={() => deleteSupplier(selectedSupplier.id, selectedSupplier.name)} className="flex-1 bg-red-600 text-white py-2 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors cursor-pointer">
+                    Delete
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* TOAST NOTIFICATION UI */}
+        {toast.show && (
+          <div className={`fixed top-6 right-6 z-[100] flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border transition-all duration-300 animate-[slideIn_0.3s_ease-out] ${
+            toast.type === 'success' 
+              ? isDarkMode ? 'bg-emerald-900/90 border-emerald-700/50 text-emerald-50 backdrop-blur-md' : 'bg-white border-emerald-200 text-emerald-800'
+              : isDarkMode ? 'bg-red-900/90 border-red-700/50 text-red-50 backdrop-blur-md' : 'bg-white border-red-200 text-red-800'
+          }`}>
+            <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
+              toast.type === 'success' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-red-500/20 text-red-500'
+            }`}>
+              <i className={`fa-solid ${toast.type === 'success' ? 'fa-check' : 'fa-exclamation'} text-sm`}></i>
+            </div>
+            <span className="font-semibold text-sm pr-4">{toast.message}</span>
+            <button 
+              onClick={() => setToast({ show: false, message: '', type: 'success' })} 
+              className="ml-auto text-gray-400 hover:text-gray-600 transition-colors cursor-pointer"
+            >
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }

@@ -1,17 +1,22 @@
 const express = require('express');
 const router = express.Router();
-// Impor middleware otentikasi kamu
-const { verifyToken } = require('../middleware/authMiddleware'); 
-const db = require('../config/db'); // Impor koneksi database kamu (MySQL/PostgreSQL/MongoDB)
+
+// 1. DIPERBAIKI: Mengimpor koneksi database dari file yang benar
+const db = require('../database'); 
+
+// 2. DIPERBAIKI: Mengimpor middleware dari authUtils.js
+const { authenticate } = require('../authUtils'); 
 
 // DELETE /api/system/clear-data
-router.delete('/clear-data', verifyToken, async (req, res) => {
+// Menggunakan 'authenticate' untuk memastikan hanya user login yang bisa menghapus data
+router.delete('/clear-data', authenticate, async (req, res) => {
   try {
     // Hapus data operasional saja (sesuaikan dengan tabel di database kamu)
-    await db.query('TRUNCATE TABLE purchase_orders');
-    await db.query('TRUNCATE TABLE suppliers');
-    await db.query('TRUNCATE TABLE reports');
-    await db.query('TRUNCATE TABLE otd_performance');
+    // Gunakan db.promise().query() jika db kamu masih menggunakan versi callback bawaan mysql2
+    await db.promise().query('TRUNCATE TABLE purchase_orders');
+    await db.promise().query('TRUNCATE TABLE suppliers');
+    await db.promise().query('TRUNCATE TABLE reports');
+    await db.promise().query('TRUNCATE TABLE otd_performance');
     // CATATAN: Jangan hapus isi tabel `users`
 
     return res.status(200).json({

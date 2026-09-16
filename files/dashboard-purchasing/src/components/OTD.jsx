@@ -8,9 +8,16 @@ import { useRole } from '../context/RoleContext';
 
 const COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6'];
 
-const KPICard = ({ title, value, color = '#3b82f6' }) => (
-  <div className="bg-[#182238] border border-slate-700/60 rounded-xl p-4 flex flex-col justify-between shadow-md">
-    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{title}</span>
+// API Base URL - harus sesuai port server backend (index.js -> app.listen)
+const API_BASE_URL = 'http://localhost:5000/api';
+
+const KPICard = ({ title, value, color = '#3b82f6', isDarkMode }) => (
+  <div className={`border rounded-xl p-4 flex flex-col justify-between shadow-sm transition-colors ${
+    isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+  }`}>
+    <span className={`text-xs font-semibold uppercase tracking-wider ${
+      isDarkMode ? 'text-slate-400' : 'text-gray-500'
+    }`}>{title}</span>
     <span className="text-2xl font-bold mt-2" style={{ color }}>{value}</span>
   </div>
 );
@@ -27,24 +34,40 @@ const getInitials = (name) => {
   return name.substring(0, 2).toUpperCase();
 };
 
-export default function OTD({ changePage: propChangePage, onLogout }) {
+export default function OTD({ changePage: propChangePage, onLogout, activePage: propActivePage = 'otd' }) {
   const { hasPermission, user } = useRole();
   const canManageUsers = hasPermission('manage_users');
-  const [isDarkMode, setIsDarkMode] = useState(true);
-  const [showProfileCard, setShowProfileCard] = useState(false);
-  const [activePage, setActivePage] = useState('otd');
-  const [time, setTime] = useState(new Date());
   
-  // MENGAMBIL DATA DARI LOCAL STORAGE AGAR TIDAK HILANG SAAT PINDAH HALAMAN
-  const [rawData, setRawData] = useState(() => {
-    const savedData = localStorage.getItem('otdExcelData');
-    return savedData ? JSON.parse(savedData) : [];
+  // Pengecekan apakah user memiliki hak akses Admin
+const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
+  // === UI & PROFILE STATE ===
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('theme');
+    return savedTheme !== null ? savedTheme === 'dark' : false;
   });
-  
+
+  // Efek untuk menyimpan perubahan tema agar tersinkronisasi antar halaman
+  useEffect(() => {
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);
+
+  const [showProfileCard, setShowProfileCard] = useState(false);
+  const [localActivePage, setLocalActivePage] = useState(propActivePage);
+  const [time, setTime] = useState(new Date());
+
+  const activePage = propActivePage || localActivePage;
+  const changePage = propChangePage || ((page) => setLocalActivePage(page));
+
+  // DATA DIAMBIL DARI DATABASE (bukan lagi dari localStorage)
+  const [rawData, setRawData] = useState([]);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [filterMonth, setFilterMonth] = useState(''); // '' = tampilkan semua periode, format "YYYY-MM"
+
   const profileRef = useRef(null);
   const fileInputRef = useRef(null);
-
-  const changePage = propChangePage || ((page) => setActivePage(page));
 
   // Update Jam Realtime
   useEffect(() => {
@@ -71,36 +94,67 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
   };
 
   // -------------------------------------------------------------
+  // AMBIL DATA OTD PERFORMANCE DARI DATABASE
+  // -------------------------------------------------------------
+  const fetchOtdData = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/otd-performance`);
+      if (response.ok) {
+        const data = await response.json();
+        setRawData(data);
+        console.log('✓ OTD data loaded from DB:', data.length);
+      }
+    } catch (error) {
+      console.error('❌ Error fetching OTD data:', error);
+    }
+  };
+
+  useEffect(() => {
+    fetchOtdData();
+  }, []);
+
+  // -------------------------------------------------------------
   // FUNGSI IMPORT EXCEL (format KPI.xlsx)
   // -------------------------------------------------------------
   const handleFileUpload = (e) => {
+    if (!isAdmin) return; // Proteksi tambahan di level handler
+
     const file = e.target.files[0];
     if (!file) return;
 
+    setIsImporting(true);
+    setStatusMessage('');
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const data = new Uint8Array(event.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
-      const json = XLSX.utils.sheet_to_json(worksheet, { raw: false }); // raw:false parses dates correctly
-      
-      // MENYIMPAN DATA BARU KE STATE DAN LOCAL STORAGE
-      setRawData(json);
-      localStorage.setItem('otdExcelData', JSON.stringify(json));
-      
-      // POST setiap OTD record ke backend
-      json.forEach(row => {
-        saveOTDPerformanceToBackend(row);
-      });
+      const json = XLSX.utils.sheet_to_json(worksheet, { raw: false });
+
+      setStatusMessage(`Menyimpan ${json.length} data ke database...`);
+      let successCount = 0;
+
+      for (const row of json) {
+        const saved = await saveOTDPerformanceToBackend(row);
+        if (saved) successCount++;
+        await new Promise(resolve => setTimeout(resolve, 100)); // hindari rate limit
+      }
+
+      // Ambil ulang data dari database supaya dashboard konsisten dengan yang tersimpan
+      await fetchOtdData();
+
+      setIsImporting(false);
+      setStatusMessage(`✓ Berhasil menyimpan ${successCount}/${json.length} data.`);
+      setTimeout(() => setStatusMessage(''), 5000);
     };
     reader.readAsArrayBuffer(file);
+    e.target.value = null;
   };
 
-  // Fungsi async untuk POST OTD Performance ke backend
   const saveOTDPerformanceToBackend = async (otdData) => {
     try {
-      const response = await fetch('http://localhost:5000/api/otd-performance', {
+      const response = await fetch(`${API_BASE_URL}/otd-performance`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,12 +186,53 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
   };
 
   // -------------------------------------------------------------
+  // HAPUS SEMUA DATA OTD PERFORMANCE DI DATABASE
+  // -------------------------------------------------------------
+  const clearOtdData = async () => {
+    if (!isAdmin) return; // Proteksi tambahan di level handler
+
+    setIsClearing(true);
+    setStatusMessage('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/system/clear-data`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modules: ['otdPerformance'] })
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || 'Gagal menghapus data');
+      }
+
+      await fetchOtdData();
+      setStatusMessage('✓ Semua data OTD Performance berhasil dihapus.');
+    } catch (error) {
+      console.error('❌ Error Clear Data:', error);
+      setStatusMessage(`Gagal menghapus data: ${error.message}`);
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+      setTimeout(() => setStatusMessage(''), 5000);
+    }
+  };
+
+  // -------------------------------------------------------------
   // PENGOLAHAN DATA KHUSUS OTD PERFORMANCE
   // -------------------------------------------------------------
-  const dashboardData = useMemo(() => {
-    if (!rawData || rawData.length === 0) return null;
+  const filteredData = useMemo(() => {
+    if (!filterMonth) return rawData;
+    return rawData.filter(row => {
+      if (!row.record_date) return false;
+      const rowMonth = new Date(row.record_date).toISOString().slice(0, 7); // "YYYY-MM"
+      return rowMonth === filterMonth;
+    });
+  }, [rawData, filterMonth]);
 
-    let totalPOs = rawData.length;
+  const dashboardData = useMemo(() => {
+    if (!filteredData || filteredData.length === 0) return null;
+
+    let totalPOs = filteredData.length;
     let onTimeCount = 0;
     let lateCount = 0;
     let totalCycleTime = 0;
@@ -148,37 +243,32 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
     const trendMap = {};
     const uniqueSuppliers = new Set();
 
-    rawData.forEach(row => {
-      const approved = parseFloat(row['Approved Amount (US$)']) || 0;
-      const cycleTime = parseFloat(row['Cycle Time (Days)']) || 0;
-      const category = row['Category'] || 'Unknown';
-      const supplier = row['Supplier'] || 'Unknown';
-      const onTimeStr = row['On-Time?'];
-      const dateStr = row['Order Date'];
-      
-      const isOnTime = (onTimeStr === 'Yes');
-      
-      // Aggregates
+    filteredData.forEach(row => {
+      const approved = parseFloat(row.spend_impact) || 0;
+      const cycleTime = parseFloat(row.cycle_time_days) || 0;
+      const category = row.category || 'Unknown';
+      const supplier = row.supplier_name || 'Unknown';
+      const dateStr = row.record_date;
+
+      const isOnTime = (row.delivery_status === 'On-Time');
+
       totalSpend += approved;
       totalCycleTime += cycleTime;
       if (isOnTime) {
-          onTimeCount++;
+        onTimeCount++;
       } else {
-          lateCount++;
+        lateCount++;
       }
       uniqueSuppliers.add(supplier);
 
-      // Map untuk OTD by Supplier
       if (!supplierMap[supplier]) supplierMap[supplier] = { total: 0, onTime: 0 };
       supplierMap[supplier].total += 1;
       if (isOnTime) supplierMap[supplier].onTime += 1;
 
-      // Map untuk OTD by Category
       if (!categoryMap[category]) categoryMap[category] = { total: 0, onTime: 0 };
       categoryMap[category].total += 1;
       if (isOnTime) categoryMap[category].onTime += 1;
 
-      // Map untuk OTD Trend Bulanan
       if (dateStr) {
         const dateObj = new Date(dateStr);
         if (!isNaN(dateObj)) {
@@ -190,28 +280,25 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
       }
     });
 
-    // Formatting hasil untuk Recharts
-    const supplierData = Object.keys(supplierMap).map(k => ({ 
-      name: k, 
+    const supplierData = Object.keys(supplierMap).map(k => ({
+      name: k,
       "OTD %": parseFloat(((supplierMap[k].onTime / supplierMap[k].total) * 100).toFixed(1))
     }));
 
-    const categoryData = Object.keys(categoryMap).map(k => ({ 
-      name: k, 
+    const categoryData = Object.keys(categoryMap).map(k => ({
+      name: k,
       "OTD %": parseFloat(((categoryMap[k].onTime / categoryMap[k].total) * 100).toFixed(1))
     }));
 
-    // Data status breakdown (On-Time vs Late)
     const deliveryStatusData = [
       { name: 'On-Time', value: onTimeCount },
       { name: 'Late Delivery', value: lateCount }
     ];
-    
-    // Sort trend bulan secara kronologis
-    const trendData = Object.keys(trendMap).map(k => ({ 
-      month: k, 
-      "OTD %": parseFloat(((trendMap[k].onTime / trendMap[k].total) * 100).toFixed(1)) 
-    })).sort((a, b) => new Date(`1 ${a.month}`) - new Date(`1 ${b.month}`)); 
+
+    const trendData = Object.keys(trendMap).map(k => ({
+      month: k,
+      "OTD %": parseFloat(((trendMap[k].onTime / trendMap[k].total) * 100).toFixed(1))
+    })).sort((a, b) => new Date(`1 ${a.month}`) - new Date(`1 ${b.month}`));
 
     return {
       kpi: {
@@ -231,59 +318,67 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
       }
     };
 
-  }, [rawData]);
+  }, [filteredData]);
+
+  const tickColor = isDarkMode ? '#94a3b8' : '#64748b';
+  const gridColor = isDarkMode ? '#334155' : '#e2e8f0';
+  const tooltipStyle = {
+    backgroundColor: isDarkMode ? '#0f172a' : '#ffffff',
+    borderColor: isDarkMode ? '#334155' : '#e2e8f0',
+    color: isDarkMode ? '#ffffff' : '#0f172a'
+  };
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      
+
       {/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img 
-                src="/images/logo.png" 
-                alt="Detpak Logo" 
-                className="h-12 w-auto object-contain" 
+            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage('dashboard')}>
+              <img
+                src="/images/logo.png"
+                alt="Detpak Logo"
+                className="h-12 w-auto object-contain"
               />
-            </div>            
+            </div>
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
               <button onClick={() => changePage('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
               <button onClick={() => changePage('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage('otd')} className="bg-[#E31837] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">OTD Performance</button>
+              <button onClick={() => changePage?.('otd')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">OTD Performance</button>
             </nav>
           </div>
 
           <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
+            <button
+              onClick={() => setIsDarkMode(!isDarkMode)}
+              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`}
               title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             >
               <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
             </button>
-            
+
             <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
               <i className="fa-regular fa-clock text-blue-500"></i>
               <span>{formattedTime}</span>
             </div>
 
             <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
-                {user?.name || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
+              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
+                {user?.name || user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
               </button>
-              
+
               {showProfileCard && (
                 <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
                   <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                     <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      {getInitials(user?.name)}
+                      {getInitials(user?.name || user?.username)}
                     </div>
                     <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.name || 'Admin'}</h4>
-                      <p className="text-sm text-gray-400 truncate">{user?.email || 'admin@detpak.com'}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || 'Administrator'}</span>
+                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.name || user?.username || '-'}</h4>
+                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
+                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
                     </div>
                   </div>
                   <div className="pt-2 space-y-1">
@@ -311,107 +406,216 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
       </header>
 
       {/* BODY SIDEBAR & CONTENT */}
-      <div className="flex flex-1 overflow-hidden">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
+      <div className="flex flex-1 overflow-hidden relative">
+        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
+          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
+        }`}>
           <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-            </button>
-            <button onClick={() => changePage && changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
-            </button>
-            <button onClick={() => changePage && changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
-            </button>
-            <button onClick={() => changePage && changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
-            </button>
-            <button onClick={() => changePage && changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
-            </button>
-            <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
-            </button>
+            {[
+              { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
+              { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
+              { id: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
+              { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
+              { id: 'report', label: 'Report', icon: 'fa-file-lines' },
+              { id: 'settings', label: 'Settings', icon: 'fa-gear' },
+            ].map((item) => {
+              const isActive = activePage === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => changePage(item.id)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+                    isActive
+                      ? 'bg-[#E31837] text-white font-bold shadow-xs'
+                      : isDarkMode
+                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
+                  }`}
+                >
+                  <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
+                </button>
+              );
+            })}
 
             {canManageUsers && (
-              <button onClick={() => changePage && changePage('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
+              <button
+                onClick={() => changePage('userManagement')}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+                  activePage === 'userManagement'
+                    ? 'bg-[#E31837] text-white font-bold shadow-xs'
+                    : isDarkMode
+                    ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
+                    : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
+                }`}
+              >
                 <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
               </button>
             )}
           </nav>
         </aside>
 
-        {/* MAIN CONTENT AREA */}
         <main className="flex-1 overflow-y-auto p-6 relative">
-          
+
           {/* UPLOAD FILE SECTION */}
-          <div className="mb-6 flex justify-between items-center bg-[#1E293B] p-4 rounded-xl border border-slate-700/60 shadow-md">
+          <div className={`mb-6 flex flex-wrap justify-between items-center gap-4 p-4 rounded-xl border transition-colors shadow-sm ${
+            isDarkMode ? 'bg-[#1E293B] border-slate-700/60' : 'bg-white border-gray-200'
+          }`}>
             <div>
-              <h3 className="text-lg font-bold text-white">Upload KPI Data</h3>
-              <p className="text-sm text-slate-400">Import your <span className="font-semibold italic">format KPI.xlsx</span> file here to update the OTD Performance dashboard.</p>
+              <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload KPI Data</h3>
+              <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                Import your <span className="font-semibold italic">format KPI.xlsx</span> file here to update the OTD Performance dashboard.
+              </p>
+              {statusMessage && (
+                <p className={`text-sm mt-1 font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{statusMessage}</p>
+              )}
             </div>
-            <input 
-              type="file" 
-              accept=".xlsx, .xls"
-              ref={fileInputRef}
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-            <button 
-              onClick={() => fileInputRef.current.click()}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-semibold transition-colors cursor-pointer shadow-sm flex items-center gap-2"
-            >
-              <i className="fa-solid fa-file-excel"></i> Import Excel
-            </button>
+
+            <div className="flex items-center gap-3">
+              {/* Filter Bulan & Tahun */}
+              <input
+                type="month"
+                value={filterMonth}
+                onChange={(e) => setFilterMonth(e.target.value)}
+                className={`border px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs outline-none cursor-pointer transition-colors ${
+                  isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-300 focus:border-slate-500' : 'bg-white border-slate-200 text-slate-600 focus:border-blue-400'
+                }`}
+              />
+              {filterMonth && (
+                <button
+                  onClick={() => setFilterMonth('')}
+                  className={`px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs transition-colors cursor-pointer ${
+                    isDarkMode ? 'bg-[#0F172A] border border-slate-700 text-slate-300 hover:bg-slate-800' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                  title="Tampilkan semua periode"
+                >
+                  Semua Periode
+                </button>
+              )}
+
+              {/* Tombol Import Excel & Clear Data hanya tampil untuk Admin */}
+              {isAdmin && (
+                <>
+                  <input
+                    type="file"
+                    accept=".xlsx, .xls"
+                    ref={fileInputRef}
+                    onChange={handleFileUpload}
+                    className="hidden"
+                    disabled={isImporting}
+                  />
+                  <button
+                    onClick={() => fileInputRef.current.click()}
+                    disabled={isImporting}
+                    className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 ${
+                      isImporting ? 'bg-slate-400 cursor-not-allowed text-white' : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
+                    }`}
+                  >
+                    <i className={`fa-solid ${isImporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`}></i>
+                    {isImporting ? 'Syncing...' : 'Import Excel'}
+                  </button>
+
+                  <button
+                    onClick={() => setShowClearConfirm(true)}
+                    disabled={isClearing || rawData.length === 0}
+                    className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 cursor-pointer ${
+                      isClearing || rawData.length === 0
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                        : 'bg-red-600 hover:bg-red-700 text-white'
+                    }`}
+                  >
+                    <i className="fa-solid fa-trash"></i> Clear Data
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
+          {/* MODAL KONFIRMASI CLEAR DATA */}
+          {showClearConfirm && isAdmin && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+              <div className={`w-full max-w-sm rounded-xl p-6 shadow-xl ${isDarkMode ? 'bg-[#1E293B] text-slate-100' : 'bg-white text-gray-800'}`}>
+                <h3 className="text-lg font-bold mb-2">Hapus semua data OTD Performance?</h3>
+                <p className={`text-sm mb-6 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                  Tindakan ini akan menghapus seluruh data OTD Performance dari database secara permanen dan tidak bisa dibatalkan.
+                </p>
+                <div className="flex justify-end gap-3">
+                  <button
+                    onClick={() => setShowClearConfirm(false)}
+                    disabled={isClearing}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${
+                      isDarkMode ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    Batal
+                  </button>
+                  <button
+                    onClick={clearOtdData}
+                    disabled={isClearing}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer flex items-center gap-2"
+                  >
+                    {isClearing && <i className="fa-solid fa-spinner fa-spin"></i>}
+                    Ya, Hapus Semua
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {!dashboardData ? (
-             <div className="flex flex-col items-center justify-center h-96 border-2 border-dashed border-slate-600 rounded-xl">
-                <i className="fa-solid fa-truck-fast text-6xl text-slate-500 mb-4"></i>
-                <h3 className="text-xl font-semibold text-slate-300">No Data Available</h3>
-                <p className="text-slate-500 mt-2">Please import the <span className="italic">format KPI.xlsx</span> file to view OTD metrics.</p>
+             <div className={`flex flex-col items-center justify-center h-96 border-2 border-dashed rounded-xl transition-colors ${
+               isDarkMode ? 'border-slate-700 bg-[#1E293B]/40' : 'border-gray-300 bg-white/50'
+             }`}>
+                <i className={`fa-solid fa-truck-fast text-6xl mb-4 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
+                <h3 className={`text-xl font-semibold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>No Data Available</h3>
+                <p className={`mt-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>
+                  Please import the <span className="italic">format KPI.xlsx</span> file to view OTD metrics.
+                </p>
              </div>
           ) : (
             <>
               {/* KPI CARDS GRID */}
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <KPICard title="Total POs" value={dashboardData.kpi.totalPOs} color="#60a5fa" />
-                <KPICard title="On-Time Delivery %" value={formatPercent(dashboardData.kpi.otdPercent)} color={dashboardData.kpi.otdPercent >= 90 ? "#10b981" : "#f59e0b"} />
-                <KPICard title="Total On-Time" value={dashboardData.kpi.onTimePOs} color="#10b981" />
-                <KPICard title="Total Late" value={dashboardData.kpi.latePOs} color="#ef4444" />
-                <KPICard title="Avg Cycle Time (Days)" value={dashboardData.kpi.avgCycleTime.toFixed(1)} color="#a78bfa" />
-                <KPICard title="Active Suppliers" value={dashboardData.kpi.activeSuppliers} color="#fb923c" />
-                <KPICard title="Total Spend Impact" value={formatCurrency(dashboardData.kpi.totalSpend)} color="#60a5fa" />
+                <KPICard title="Total POs" value={dashboardData.kpi.totalPOs} color="#60a5fa" isDarkMode={isDarkMode} />
+                <KPICard title="On-Time Delivery %" value={formatPercent(dashboardData.kpi.otdPercent)} color={dashboardData.kpi.otdPercent >= 90 ? "#10b981" : "#f59e0b"} isDarkMode={isDarkMode} />
+                <KPICard title="Total On-Time" value={dashboardData.kpi.onTimePOs} color="#10b981" isDarkMode={isDarkMode} />
+                <KPICard title="Total Late" value={dashboardData.kpi.latePOs} color="#ef4444" isDarkMode={isDarkMode} />
+                <KPICard title="Avg Cycle Time (Days)" value={dashboardData.kpi.avgCycleTime.toFixed(1)} color="#a78bfa" isDarkMode={isDarkMode} />
+                <KPICard title="Active Suppliers" value={dashboardData.kpi.activeSuppliers} color="#fb923c" isDarkMode={isDarkMode} />
+                <KPICard title="Total Spend Impact" value={formatCurrency(dashboardData.kpi.totalSpend)} color="#60a5fa" isDarkMode={isDarkMode} />
               </div>
 
               {/* BAR CHARTS ROW */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                <div className="bg-[#182238] border border-slate-700/60 rounded-xl p-5 shadow-md">
-                  <h3 className="text-center font-semibold text-slate-200 mb-4 text-base">OTD % by Supplier</h3>
+                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+                }`}>
+                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Supplier</h3>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={dashboardData.charts.supplierData} margin={{ top: 5, right: 10, left: 10, bottom: 85 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                        <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} domain={[0, 100]} />
-                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff' }} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: '#cbd5e1' }} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
+                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
                         <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={22} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
 
-                <div className="bg-[#182238] border border-slate-700/60 rounded-xl p-5 shadow-md">
-                  <h3 className="text-center font-semibold text-slate-200 mb-4 text-base">OTD % by Category</h3>
+                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+                }`}>
+                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Category</h3>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={dashboardData.charts.categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 65 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: '#94a3b8' }} />
-                        <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} domain={[0, 100]} />
-                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff' }} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: '#cbd5e1' }} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
+                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
                         <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#10b981" radius={[4, 4, 0, 0]} barSize={22} />
                       </BarChart>
                     </ResponsiveContainer>
@@ -421,24 +625,28 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
 
               {/* LINE & PIE CHARTS ROW */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="bg-[#182238] border border-slate-700/60 rounded-xl p-5 shadow-md">
-                  <h3 className="text-center font-semibold text-slate-200 mb-4 text-base">Monthly OTD % Trend</h3>
+                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+                }`}>
+                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Monthly OTD % Trend</h3>
                   <div className="h-72">
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={dashboardData.charts.trendData} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} />
-                        <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} domain={[0, 100]} />
-                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff' }} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: '#cbd5e1' }} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: tickColor }} />
+                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
                         <Line type="monotone" dataKey="OTD %" name="On-Time Delivery (%)" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4, fill: '#f59e0b' }} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                 </div>
 
-                <div className="bg-[#182238] border border-slate-700/60 rounded-xl p-5 shadow-md">
-                  <h3 className="text-center font-semibold text-slate-200 mb-4 text-base">Delivery Status Breakdown</h3>
+                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+                }`}>
+                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Delivery Status Breakdown</h3>
                   <div className="h-72 flex justify-center items-center">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart>
@@ -447,8 +655,8 @@ export default function OTD({ changePage: propChangePage, onLogout }) {
                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
-                        <Tooltip contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', color: '#fff' }} />
-                        <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px', color: '#cbd5e1' }} />
+                        <Tooltip contentStyle={tooltipStyle} />
+                        <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>

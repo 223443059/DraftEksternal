@@ -53,19 +53,22 @@ const authenticate = (req, res, next) => {
 // AUTHORIZE MIDDLEWARE
 // ============================================
 const authorize = (requiredPermissions) => {
-  return (req, res, next) => {
-    const query = `
-      SELECT GROUP_CONCAT(p.name) as permissions
-      FROM users u
-      LEFT JOIN role_permissions rp ON u.role_id = rp.role_id
-      LEFT JOIN permissions p ON rp.permission_id = p.id
-      WHERE u.id = ?
-      GROUP BY u.id
-    `;
+  return async (req, res, next) => {
+    try {
+      const query = `
+        SELECT GROUP_CONCAT(p.name) as permissions
+        FROM users u
+        LEFT JOIN role_permissions rp ON u.role_id = rp.role_id
+        LEFT JOIN permissions p ON rp.permission_id = p.id
+        WHERE u.id = ?
+        GROUP BY u.id
+      `;
 
-    db.query(query, [req.user.id], (err, results) => {
-      if (err || !results.length) {
-        return res.status(403).json({ message: 'Access denied - no permissions found' });
+      // Gunakan await db.query (format Promise) seperti di users_2.js
+      const [results] = await db.query(query, [req.user.id]);
+
+      if (!results || results.length === 0) {
+        return res.status(403).json({ message: 'Access denied - user not found' });
       }
 
       const userPermissions = results[0].permissions ? results[0].permissions.split(',') : [];
@@ -79,8 +82,12 @@ const authorize = (requiredPermissions) => {
         });
       }
 
+      // Lanjut ke rute selanjutnya jika lolos
       next();
-    });
+    } catch (error) {
+      console.error('[AUTH ERROR] authorize middleware:', error);
+      return res.status(500).json({ message: 'Database error in authorization' });
+    }
   };
 };
 

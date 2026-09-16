@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRole } from '../context/RoleContext';
 
-export default function Settings({ changePage, onLogout }) {
+// Tambahkan activePage = 'settings' pada props
+export default function Settings({ changePage, onLogout, activePage = 'settings' }) {
   const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
 
@@ -120,35 +121,55 @@ export default function Settings({ changePage, onLogout }) {
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-[#1E293B] border-slate-700'}`}>
-          <nav className="flex flex-col gap-2 px-4">
-            <button onClick={() => changePage?.('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-            </button>
-            <button onClick={() => changePage?.('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
-            </button>
-            <button onClick={() => changePage?.('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
-            </button>
-            <button onClick={() => changePage?.('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
-            </button>
-            <button onClick={() => changePage?.('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
-              <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
-            </button>
-            <button onClick={() => changePage?.('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-bold text-white bg-[#E31837] rounded-xl transition-colors text-left cursor-pointer shadow-xs">
-              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
-            </button>
+        {/* === SIDEBAR === */}
+{/* === SIDEBAR === */}
+<aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
+  isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
+}`}>
+  <nav className="flex flex-col gap-2 px-4">
+    {[
+      { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
+      { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
+      { id: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
+      { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
+      { id: 'report', label: 'Report', icon: 'fa-file-lines' },
+      { id: 'settings', label: 'Settings', icon: 'fa-gear' },
+    ].map((item) => {
+      const isActive = activePage === item.id;
+      return (
+        <button
+          key={item.id}
+          onClick={() => changePage?.(item.id)}
+          className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+            isActive
+              ? 'bg-[#004797] text-white font-bold shadow-xs'
+              : isDarkMode
+              ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
+              : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
+          }`}
+        >
+          <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
+        </button>
+      );
+    })}
 
-            {canManageUsers && (
-              <button onClick={() => changePage?.('userManagement')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-amber-400 rounded-xl hover:bg-slate-800/80 hover:text-amber-300 transition-colors text-left cursor-pointer">
-                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
-              </button>
-            )}
-          </nav>
-        </aside>
-
+    {/* Menu Khusus User Management */}
+    {canManageUsers && (
+      <button
+        onClick={() => changePage?.('userManagement')}
+        className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+          activePage === 'userManagement'
+            ? 'bg-[#004797] text-white font-bold shadow-xs'
+            : isDarkMode
+            ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
+            : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
+        }`}
+      >
+        <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+      </button>
+    )}
+  </nav>
+</aside>
         <main className="flex-1 overflow-y-auto p-8">
           <div className="flex items-center gap-4 mb-8">
              <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl shrink-0 shadow-sm border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-white text-red-500 border-red-100'}`}>

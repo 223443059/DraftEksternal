@@ -2,19 +2,21 @@ import { createContext, useContext, useState, useEffect } from 'react';
 
 const RoleContext = createContext(null);
 
-// MENGGUNAKAN window.location.hostname AGAR DINAMIS[cite: 1]
-// Jika dibuka dari localhost, dia akan cari ke localhost:5000
-// Jika dibuka dari idws-n26010, dia akan cari ke idws-n26010:5000
-// Jika dibuka dari IP 10.62.11.106, dia akan cari ke 10.62.11.106:5000
+// MENGGUNAKAN window.location.hostname AGAR DINAMIS
 const API_BASE = `http://${window.location.hostname}:5000/api/users`;
 
+// Pemetaan permission default berdasarkan role
+const ROLE_PERMISSIONS = {
+  superadmin: ['manage_users', 'view_dashboard', 'edit_data'],
+  admin: ['manage_users', 'view_dashboard', 'edit_data'],
+  user: ['view_dashboard']
+};
+
 export function RoleProvider({ children }) {
-  const [user, setUser] = useState(null); // { id, email, username, role_id, role }[cite: 1]
-  const [permissions, setPermissions] = useState([]); // dari role_permissions, contoh: ['manage_users'][cite: 1]
+  const [user, setUser] = useState(null);
+  const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Ambil profile + permissions dari server (bukan decode JWT), karena
-  // permission-nya dinamis dari tabel role_permissions, bukan hardcode.[cite: 1]
   const fetchProfile = async (token) => {
     try {
       const res = await fetch(`${API_BASE}/profile`, {
@@ -22,17 +24,28 @@ export function RoleProvider({ children }) {
       });
       if (!res.ok) throw new Error('Token tidak valid atau sudah expired');
       const data = await res.json();
+      
       setUser(data.user);
-      setPermissions(data.permissions || []);
+      localStorage.setItem('user', JSON.stringify(data.user)); 
+      
+      // Ambil permissions dari response backend jika ada, atau gunakan dari ROLE_PERMISSIONS
+      const userRole = data.user?.role?.toLowerCase();
+      const fallbackPermissions = ROLE_PERMISSIONS[userRole] || [];
+      const finalPermissions = (data.permissions && data.permissions.length > 0) 
+        ? data.permissions 
+        : fallbackPermissions;
+
+      setPermissions(finalPermissions);
       return true;
     } catch (err) {
       localStorage.removeItem('token');
+      localStorage.removeItem('user');
       setUser(null);
       setPermissions([]);
       return false;
     }
   };
-
+  
   useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
@@ -42,7 +55,6 @@ export function RoleProvider({ children }) {
     }
   }, []);
 
-  // Panggil ini setelah POST /login sukses, dengan token dari response-nya[cite: 1]
   const login = async (token) => {
     localStorage.setItem('token', token);
     const ok = await fetchProfile(token);
@@ -60,7 +72,6 @@ export function RoleProvider({ children }) {
 
   const hasPermission = (permission) => permissions.includes(permission);
 
-  // Semua route CRUD user di backend digerbang oleh satu permission: 'manage_users'[cite: 1]
   const isAdmin = () => hasPermission('manage_users');
 
   const value = {
@@ -69,7 +80,7 @@ export function RoleProvider({ children }) {
     loading,
     login,
     logout,
-    logoutUser: logout, // alias, dipakai oleh Navbar.jsx[cite: 1]
+    logoutUser: logout,
     hasPermission,
     isAdmin,
   };
