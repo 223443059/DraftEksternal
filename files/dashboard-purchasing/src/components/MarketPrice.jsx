@@ -533,6 +533,7 @@ useEffect(() => {
           isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
         }`}>
           <nav className="flex flex-col gap-2 px-4">
+<<<<<<< Updated upstream
             {[
               { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
               { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
@@ -558,6 +559,26 @@ useEffect(() => {
                 </button>
               );
             })}
+=======
+            <button onClick={() => changePage && changePage('dashboard')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
+            </button> 
+            <button onClick={() => changePage && changePage('suppliers')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
+            </button>
+            <button onClick={() => changePage && changePage('purchaseOrders')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
+            </button>
+            <button onClick={() => changePage && changePage('analytics')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
+            </button>
+            <button onClick={() => changePage && changePage('report')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
+            </button>
+            <button onClick={() => changePage && changePage('settings')} className="w-full flex items-center gap-3 px-4 py-3 text-sm font-medium text-slate-300 rounded-xl hover:bg-slate-800/80 hover:text-white transition-colors text-left cursor-pointer">
+              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
+            </button>
+>>>>>>> Stashed changes
 
             {/* Menu Khusus User Management */}
             {canManageUsers && (

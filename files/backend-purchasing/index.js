@@ -1,7 +1,12 @@
 const express = require('express');
 const cors = require('cors');
+<<<<<<< Updated upstream
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
+=======
+// UBAH: Gunakan bcryptjs agar konsisten dengan routes/users.js Anda
+const bcrypt = require('bcryptjs'); 
+>>>>>>> Stashed changes
 const jwt = require('jsonwebtoken');
 
 const app = express();
@@ -13,12 +18,34 @@ const SECRET_KEY = 'your-secret-key-change-in-production';
 // 1. MIDDLEWARE
 // =================================================================
 app.use(cors({
+<<<<<<< Updated upstream
   origin: true,
   credentials: true
+=======
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://idws-n26010:5173', // TAMBAHKAN INI: Huruf kecil sesuai yang dibaca browser
+    'http://IDWS-N26010:5173', // Biarkan huruf besar untuk jaga-jaga
+    'http://10.62.11.106:5173',
+    'http://idws-n26010.internal.detmold.com.au:5173',
+    'http://IDWS-N26010.internal.detmold.com.au:5173'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+>>>>>>> Stashed changes
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+<<<<<<< Updated upstream
+=======
+// ... (Sisa kode ke bawah tidak perlu diubah, sudah benar) ...
+// Secret Key JWT
+const SECRET_KEY = 'your-secret-key-change-in-production';
+
+>>>>>>> Stashed changes
 // =================================================================
 // 2. KONFIGURASI DATABASE
 // =================================================================
