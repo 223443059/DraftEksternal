@@ -1,12 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-<<<<<<< Updated upstream
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
-=======
-// UBAH: Gunakan bcryptjs agar konsisten dengan routes/users.js Anda
-const bcrypt = require('bcryptjs'); 
->>>>>>> Stashed changes
 const jwt = require('jsonwebtoken');
 
 const app = express();
@@ -15,37 +10,21 @@ const app = express();
 const SECRET_KEY = 'your-secret-key-change-in-production';
 
 // =================================================================
-// 1. MIDDLEWARE
+// 1. MIDDLEWARE & KONFIGURASI CORS
 // =================================================================
 app.use(cors({
-<<<<<<< Updated upstream
   origin: true,
   credentials: true
-=======
-  origin: [
-    'http://localhost:5173',
-    'http://localhost:3000',
-    'http://idws-n26010:5173', // TAMBAHKAN INI: Huruf kecil sesuai yang dibaca browser
-    'http://IDWS-N26010:5173', // Biarkan huruf besar untuk jaga-jaga
-    'http://10.62.11.106:5173',
-    'http://idws-n26010.internal.detmold.com.au:5173',
-    'http://IDWS-N26010.internal.detmold.com.au:5173'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
->>>>>>> Stashed changes
 }));
+
 app.use(express.json());
+// Middleware untuk memantau semua request yang masuk
+app.use((req, res, next) => {
+  console.log(`🌐 [INCOMING] ${req.method} ${req.url}`);
+  next();
+});
 app.use(express.urlencoded({ extended: true }));
 
-<<<<<<< Updated upstream
-=======
-// ... (Sisa kode ke bawah tidak perlu diubah, sudah benar) ...
-// Secret Key JWT
-const SECRET_KEY = 'your-secret-key-change-in-production';
-
->>>>>>> Stashed changes
 // =================================================================
 // 2. KONFIGURASI DATABASE
 // =================================================================
@@ -55,11 +34,18 @@ const dbConfig = {
   password: '',
   database: 'purchasing_db',
   waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
+  connectionLimit: 20,
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  connectTimeout: 20000
 };
 
 const pool = mysql.createPool(dbConfig);
+
+pool.on('error', (err) => {
+  console.error('❌ MySQL Pool Error:', err.code, err.message);
+});
 
 // =================================================================
 // 3. HELPER FUNCTIONS
@@ -145,7 +131,7 @@ app.post('/api/users/login', async (req, res) => {
 
     console.log('[LOGIN] ✓ Password valid!');
 
-    // Generate JWT Token (REAL, not dummy!)
+    // Generate JWT Token
     const token = generateToken(user);
     console.log('[LOGIN] ✓ JWT Token generated');
 
@@ -154,7 +140,7 @@ app.post('/api/users/login', async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Login berhasil!',
-      token: token,  // ✅ REAL JWT TOKEN (not dummy!)
+      token: token,
       user: { 
         id: user.id, 
         username: user.username, 
@@ -283,13 +269,22 @@ app.get('/api/suppliers', async (req, res) => {
 app.post('/api/suppliers', async (req, res) => {
   console.log('📥 DATA SUPPLIER DITERIMA:', req.body);
   try {
-    const { name, code, supplier_code, contact_person, phone, email, address, city, tax_id, status } = req.body;
+    const {
+      name, code, supplier_code, contact_person, phone, email, address, city, tax_id, status,
+      company, address2, address3, state_prov, postal_code, country, alamat_lengkap, currency_id, terms_id
+    } = req.body;
     const randomSuffix = Math.floor(Math.random() * 900 + 100);
     const finalCode = supplier_code || code || `SUP-${Date.now().toString().slice(-6)}${randomSuffix}`;
 
     const [result] = await pool.query(
-      'INSERT INTO suppliers (supplier_code, name, contact_person, phone, email, address, city, tax_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [finalCode, name, contact_person || '', phone || '', email || '', address || '', city || '', tax_id || '', status || 'Active']
+      `INSERT INTO suppliers
+        (supplier_code, name, contact_person, phone, email, address, city, tax_id, status,
+         company, address2, address3, state_prov, postal_code, country, alamat_lengkap, currency_id, terms_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        finalCode, name, contact_person || '', phone || '', email || '', address || '', city || '', tax_id || '', status || 'Active',
+        company || '', address2 || '', address3 || '', state_prov || '', postal_code || '', country || '', alamat_lengkap || '', currency_id || '', terms_id || ''
+      ]
     );
 
     console.log('✅ SUPPLIER BERHASIL DISIMPAN ID:', result.insertId);
@@ -302,11 +297,21 @@ app.post('/api/suppliers', async (req, res) => {
 
 app.put('/api/suppliers/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, supplier_code, contact_person, phone, email, address, city, tax_id, status } = req.body;
+  const {
+    name, supplier_code, contact_person, phone, email, address, city, tax_id, status,
+    company, address2, address3, state_prov, postal_code, country, alamat_lengkap, currency_id, terms_id
+  } = req.body;
   try {
     await pool.query(
-      'UPDATE suppliers SET supplier_code = ?, name = ?, contact_person = ?, phone = ?, email = ?, address = ?, city = ?, tax_id = ?, status = ? WHERE id = ?',
-      [supplier_code, name, contact_person || '', phone || '', email || '', address || '', city || '', tax_id || '', status || 'Active', id]
+      `UPDATE suppliers SET
+        supplier_code = ?, name = ?, contact_person = ?, phone = ?, email = ?, address = ?, city = ?, tax_id = ?, status = ?,
+        company = ?, address2 = ?, address3 = ?, state_prov = ?, postal_code = ?, country = ?, alamat_lengkap = ?, currency_id = ?, terms_id = ?
+       WHERE id = ?`,
+      [
+        supplier_code, name, contact_person || '', phone || '', email || '', address || '', city || '', tax_id || '', status || 'Active',
+        company || '', address2 || '', address3 || '', state_prov || '', postal_code || '', country || '', alamat_lengkap || '', currency_id || '', terms_id || '',
+        id
+      ]
     );
     console.log('✅ SUPPLIER BERHASIL DIUPDATE ID:', id);
     return res.status(200).json({ success: true, message: 'Supplier berhasil diupdate!' });
@@ -331,7 +336,6 @@ app.delete('/api/suppliers/:id', async (req, res) => {
 // =================================================================
 // 7. ENDPOINT PURCHASE ORDERS
 // =================================================================
-// 1. GET: Ambil Data Purchase Orders beserta Nama Supplier
 app.get('/api/purchase-orders', async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -542,7 +546,6 @@ app.get('/api/reports', async (req, res) => {
   }
 });
 
-// 2. POST: Simpan Riwayat Export ke Tabel 'reports'
 app.post('/api/reports', async (req, res) => {
   const { report_name, generated_by, file_path } = req.body;
   try {
@@ -601,7 +604,19 @@ app.delete('/api/system/clear-data', async (req, res) => {
 });
 
 // =================================================================
-// 12. JALANKAN SERVER
+// 12. GLOBAL ERROR HANDLER (menangkap error tak terduga)
+// =================================================================
+app.use((err, req, res, next) => {
+  console.error('🔥 UNCAUGHT ERROR:', err.stack || err.message);
+  res.status(500).json({ success: false, message: err.message || 'Internal Server Error' });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('🔥 UNHANDLED PROMISE REJECTION:', reason);
+});
+
+// =================================================================
+// 13. JALANKAN SERVER
 // =================================================================
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {

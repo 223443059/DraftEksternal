@@ -8,8 +8,8 @@ import { useRole } from '../context/RoleContext';
 
 const COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6'];
 
-// API Base URL - harus sesuai port server backend (index.js -> app.listen)
-const API_BASE_URL = 'http://localhost:5000/api';
+// API Base URL - diubah ke IP lokal agar bisa diakses perangkat lain di jaringan yang sama
+const API_BASE_URL = 'http://idws-n26010:5000/api';
 
 const KPICard = ({ title, value, color = '#3b82f6', isDarkMode }) => (
   <div className={`border rounded-xl p-4 flex flex-col justify-between shadow-sm transition-colors ${

@@ -10,8 +10,8 @@ import {
 } from 'lucide-react';
 import { useRole } from '../context/RoleContext';
 
-// API Base URL - HARUS SAMA DENGAN PORT SERVER BACKEND (index.js -> app.listen)
-const API_BASE_URL = 'http://localhost:5000/api';
+// API Base URL - Diatur ke IP Host agar bisa diakses teman di jaringan yang sama
+const API_BASE_URL = 'http://idws-n26010:5000/api';
 
 // Helper inisial nama untuk Avatar Profile
 const getInitials = (name) => {
@@ -133,19 +133,19 @@ export default function SupplierEvaluationDashboard({ changePage: propChangePage
   }, []);
 
   // === FITUR HAPUS DATA (TODAY, 1 WEEK, 1 MONTH) ===
-const handleClearData = async (period) => {
+  const handleClearData = async (period) => {
     if (!isAdmin) return;
     const periodLabels = {
       'today': 'Hari Ini',
       '1_week': '1 Minggu Terakhir',
       '1_month': '1 Bulan Terakhir',
-      'all': 'Semua Waktu (All Time)' // <-- Tambahkan baris ini
+      'all': 'Semua Waktu (All Time)'
     };
 
     if (!window.confirm(`Apakah Anda yakin ingin menghapus data evaluasi untuk periode: ${periodLabels[period]}? Tindakan ini tidak dapat dibatalkan.`)) {
       return;
     }
-    // ... sisa kode tidak perlu diubah
+    
     setIsClearing(true);
     setShowClearDropdown(false);
     
@@ -409,7 +409,7 @@ const handleClearData = async (period) => {
       isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'
     }`}>
 
-      {/* HEADER UTAMA (TIDAK ADA YANG DIUBAH) */}
+      {/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${
         isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'
       }`}>
@@ -538,7 +538,7 @@ const handleClearData = async (period) => {
 
       <div className="flex flex-1 overflow-hidden relative">
         
-        {/* SIDEBAR (TIDAK ADA YANG DIUBAH) */}
+        {/* SIDEBAR */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
           isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
         }`}>
@@ -623,7 +623,7 @@ const handleClearData = async (period) => {
                 )}
               </div>
               
-              {/* === TOMBOL CLEAR DATA DROPDOWN (BARU) === */}
+              {/* === TOMBOL CLEAR DATA DROPDOWN === */}
               {isAdmin && (
               <div className="relative" ref={clearDropdownRef}>
                 <button

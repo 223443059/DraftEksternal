@@ -58,6 +58,9 @@ export default function Login({ onLoginSuccess }) {
   // =========================================================
   // HANDLER SUBMIT LOGIN
   // =========================================================
+// =========================================================
+  // HANDLER SUBMIT LOGIN
+  // =========================================================
   const handleLoginSubmit = async (e) => {
     e.preventDefault();
     console.log('🔄 Form Login diklik...');
@@ -83,8 +86,9 @@ export default function Login({ onLoginSuccess }) {
     setErrors({});
 
     try {
-      // ✅ DIPERBAIKI: Hanya menggunakan relative path karena Vite Proxy sudah aktif
-      const API_URL = `/api/users/login`;
+      // ✅ DIPERBAIKI: Ambil hostname saat ini, tapi paksa gunakan port 5000 (Backend)
+      // const currentHost = window.location.hostname;
+      const API_URL = `http://idws-n26010:5000/api/users/login`;
       
       console.log('📡 Mengirim request ke:', API_URL);
 
@@ -139,7 +143,6 @@ export default function Login({ onLoginSuccess }) {
       setIsLoading(false);
     }
   };
-
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden font-sans">
       

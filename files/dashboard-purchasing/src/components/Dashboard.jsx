@@ -51,7 +51,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   useEffect(() => {
     const fetchSuppliers = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/suppliers');
+        const response = await fetch('http://idws-n26010:5000/api/suppliers');
         if (response.ok) {
           const data = await response.json();
           const map = {};
@@ -88,7 +88,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     const fetchOrdersFromBackend = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/purchase-orders');
+        const response = await fetch('http://idws-n26010:5000/api/purchase-orders');
         if (response.ok) {
           const data = await response.json();
           const formattedOrders = data.map((po) => ({
@@ -303,7 +303,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     const categories = Object.keys(catMap)
       .filter(key => catMap[key] > 0)
       .sort((a, b) => catMap[b] - catMap[a])
-      .slice(0, 10)
+      .slice(0, 20)
       .map(catName => ({
         name: catName,
         value: catMap[catName]
@@ -1744,7 +1744,7 @@ onClick={() => changePage && changePage('userManagement')}                classN
                   <div>
                     <div className="flex items-center gap-3">
                       <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {barChartGroup ? `Top 10 Items in ${barChartGroup}` : 'Total Spend by Direct & Indirect Category'}
+                        {barChartGroup ? `Top 20 Items in ${barChartGroup}` : 'Total Spend by Direct & Indirect Category'}
                       </h3>
                       {barChartGroup && (
                         <button 

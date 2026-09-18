@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRole } from '../context/RoleContext';
 
-// ✅ Gunakan IP yang benar (10.1.1.1)
-const API_BASE = 'http://10.1.1.1:5000/api/users';
+// ✅ Path relatif — otomatis diteruskan ke backend lewat proxy Vite (/api -> 10.62.11.92:5000)
+const API_BASE = '/api/users';
 
 const ROLES = [
   { id: 1, name: 'Admin' },
@@ -300,7 +300,7 @@ export default function UserManagement({ changePage, onLogout, user: propUser })
     try {
       console.log('🔄 Mengirim request delete ke backend...', { modules: selectedModules });
    
-      const res = await fetch('http://10.1.1.1:5000/api/system/clear-data', {
+      const res = await fetch('/api/system/clear-data', {
         method: 'DELETE',
         headers: authHeaders(),
         body: JSON.stringify({ modules: selectedModules }), 

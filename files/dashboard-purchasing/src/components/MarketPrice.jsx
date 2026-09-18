@@ -215,42 +215,82 @@ const emptyCommodities = {
   }
 };
 
-export default function MarketPrice({ changePage, onLogout, activePage = 'marketPrice' }) {  const { hasPermission, user } = useRole();
+export default function MarketPrice({ changePage, onLogout, activePage = 'marketPrice' }) {  
+  const { hasPermission, user } = useRole();
   const canManageUsers = hasPermission('manage_users');
   const isAdmin = user?.role_id === 1;
   const [showProfileCard, setShowProfileCard] = useState(false);
   const profileRef = useRef(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   
-// === 3. UI & PROFILE STATE ===
-const [isDarkMode, setIsDarkMode] = useState(() => {
-  const savedTheme = localStorage.getItem('theme');
-  return savedTheme !== null ? savedTheme === 'dark' : false;
-});
-
-// Efek untuk menyimpan perubahan tema agar tersinkronisasi antar halaman
-useEffect(() => {
-  localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
-}, [isDarkMode]);  
-  // STATE BARU UNTUK MENAMPILKAN POPUP KONFIRMASI RESET
-  const [showResetModal, setShowResetModal] = useState(false);
-
-  const [commodities, setCommodities] = useState(() => {
-    const savedData = localStorage.getItem('detpak_commodities');
-    if (savedData) {
-      try {
-        return JSON.parse(savedData);
-      } catch (e) {
-        console.error("Gagal membaca data dari localStorage", e);
-        return emptyCommodities;
-      }
-    }
-    return emptyCommodities;
+  // Endpoint API 
+  const API_URL = 'http://idws-n26010:5000/api/market-prices'; // Ubah ke /api/suppliers jika struktur tabelnya disana
+  
+  // === UI & PROFILE STATE ===
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const savedTheme = localStorage.getItem('theme');
+    return savedTheme !== null ? savedTheme === 'dark' : false;
   });
 
   useEffect(() => {
-    localStorage.setItem('detpak_commodities', JSON.stringify(commodities));
-  }, [commodities]);
+    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+  }, [isDarkMode]);  
+
+  const [showResetModal, setShowResetModal] = useState(false);
+  
+  // HAPUS PENGGUNAAN LOCALSTORAGE UNTUK COMMODITIES, GUNAKAN STATE KOSONG DEFAULT DULU
+  const [commodities, setCommodities] = useState(emptyCommodities);
+
+  // FETCH DATA DARI BACKEND SAAT KOMPONEN DIMUAT
+  useEffect(() => {
+    const fetchMarketData = async () => {
+      try {
+        const response = await fetch(API_URL);
+        if (response.ok) {
+          const dbData = await response.json();
+          
+          // Jika respon adalah array daftar harga (mirip yang di-POST)
+          if (Array.isArray(dbData) && dbData.length > 0) {
+            let updatedCommodities = JSON.parse(JSON.stringify(emptyCommodities));
+            
+            dbData.forEach(row => {
+              const key = row.item_name;
+              if (updatedCommodities[key]) {
+                const changeStr = row.change_percent ? (row.change_percent > 0 ? `+${row.change_percent}%` : `${row.change_percent}%`) : '0.00%';
+                
+                updatedCommodities[key].history.push({
+                  date: row.recorded_date,
+                  price: row.price,
+                  open: row.open || 0,
+                  high: row.high || 0,
+                  low: row.low || 0,
+                  vol: row.vol || '0',
+                  change: changeStr
+                });
+
+                // Update current price ke yang terbaru (asumsi dbData urutannya diproses sampai akhir)
+                updatedCommodities[key].currentPrice = row.price;
+                updatedCommodities[key].change = changeStr;
+                updatedCommodities[key].isPositive = parseFloat(row.change_percent) >= 0;
+                if(row.open) updatedCommodities[key].open = row.open;
+                if(row.high) updatedCommodities[key].high = row.high;
+                if(row.low) updatedCommodities[key].low = row.low;
+                if(row.vol) updatedCommodities[key].vol = row.vol;
+              }
+            });
+            setCommodities(updatedCommodities);
+          } else if (dbData && dbData.crude && dbData.crude.history) {
+            // Jika backend menyimpan seluruh JSON object langsung
+            setCommodities(dbData);
+          }
+        }
+      } catch (error) {
+        console.error("Gagal mengambil data dari API:", error);
+      }
+    };
+    
+    fetchMarketData();
+  }, []);
 
   const [selectedKey, setSelectedKey] = useState('crude');
   const [timeFilter, setTimeFilter] = useState('All'); 
@@ -366,7 +406,8 @@ useEffect(() => {
         return new Date().toISOString().split('T')[0];
       };
 
-      const response = await fetch('http://localhost:5000/api/market-prices', {
+      // UPDATE IP POST MENGGUNAKAN API_URL
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -434,24 +475,28 @@ useEffect(() => {
 
   const filteredHistory = getFilteredHistory(activeItem?.history || []);
 
-  // FUNGSI UNTUK MENAMPILKAN MODAL
   const handleResetDataClick = () => {
     if (!isAdmin) return;
     setShowResetModal(true);
   };
 
-  // FUNGSI UNTUK MENGEKSEKUSI PENGHAPUSAN
-  const confirmResetData = () => {
+  // UPDATE FUNGSI RESET UNTUK HAPUS DATA DI BACKEND ALIH-ALIH LOCALSTORAGE
+  const confirmResetData = async () => {
+    try {
+      await fetch(API_URL, {
+        method: 'DELETE'
+      });
+    } catch (error) {
+      console.error("Gagal menghapus data di API:", error);
+    }
+    
     setCommodities(emptyCommodities);
-    localStorage.removeItem('detpak_commodities');
     setShowResetModal(false);
   };
-
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
       
       {/* HEADER UTAMA */}
-{/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
@@ -464,7 +509,6 @@ useEffect(() => {
             </div>
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              {/* Market Price tetap menyala merah karena kita berada di halaman Market Price */}
               <button onClick={() => changePage?.('marketprice')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
               <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
@@ -559,7 +603,6 @@ useEffect(() => {
               );
             })}
 
-            {/* Menu Khusus User Management */}
             {canManageUsers && (
               <button
                 onClick={() => changePage?.('userManagement')}
@@ -577,7 +620,6 @@ useEffect(() => {
           </nav>
         </aside>
 
-        {/* ... (TETAPKAN KODE <main> DI BAWAH INI SESUAI ASLINYA) ... */}
         <main className="flex-1 overflow-y-auto p-8 space-y-6 relative">
           <div className="flex justify-between items-end">
             <div>

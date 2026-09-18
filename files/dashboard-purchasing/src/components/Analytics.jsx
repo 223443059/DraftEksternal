@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRole } from '../context/RoleContext';
+import { API_ENDPOINTS } from '../utils/api.config';
 
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
 const EXCHANGE_RATE_IDR_TO_USD = 16000; 
@@ -23,6 +24,7 @@ const formatShortNumber = (val) => {
 const getOrderTotal = (order) => {
   if (!order) return 0;
   const possibleKeys = [
+    'total_amount', 'totalAmount', 'TotalAmount',
     'totalCost', 'TotalCost', 'total_cost',
     'totalValue', 'TotalValue', 'total_value',
     'grandTotal', 'total', 'totalPrice', 'price', 'value',
@@ -59,10 +61,10 @@ const getOrderTotal = (order) => {
   return totalIDR / EXCHANGE_RATE_IDR_TO_USD;
 };
 
-const getOrderDate = (order) => order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '';
+const getOrderDate = (order) => order.order_date || order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '';
 const getOrderCategory = (order) => order.category || order.kategori || order.categoryName || 'Others';
-const getOrderStatus = (order) => order.status || order.statusPesanan || order.orderStatus || '';
-const getOrderSupplier = (order) => order.supplier || order.namaSupplier || order.vendor || order.nama_supplier || 'Unknown Supplier';
+const getOrderStatus = (order) => order.order_status || order.status || order.statusPesanan || order.orderStatus || '';
+const getOrderSupplier = (order) => order.supplier_name || order.supplier || order.namaSupplier || order.vendor || order.nama_supplier || 'Unknown Supplier';
 
 // Helper untuk mendapatkan tahun dari order
 const getYearFromOrder = (order) => {
@@ -141,6 +143,9 @@ export default function Analytics({ changePage, onLogout }) {
 
   // State untuk Supplier & Tab Baru
   const [selectedSupplier, setSelectedSupplier] = useState('');
+  const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
+  const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
+  const supplierSearchRef = useRef(null);
   const [activeTab, setActiveTab] = useState('overview');
   
   // State untuk Category Breakdown
@@ -193,7 +198,7 @@ export default function Analytics({ changePage, onLogout }) {
   useEffect(() => {
     const fetchSuppliers = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/suppliers');
+        const response = await fetch(API_ENDPOINTS.SUPPLIERS);
         if (response.ok) {
           const data = await response.json();
           const map = {};
@@ -216,8 +221,7 @@ export default function Analytics({ changePage, onLogout }) {
   useEffect(() => {
     const fetchOrdersFromBackend = async () => {
       try {
-        // Ganti 10.1.1.1 menjadi localhost
-        const response = await fetch('http://localhost:5000/api/purchase-orders');
+        const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
           const formattedOrders = data.map((po) => ({
@@ -267,6 +271,9 @@ export default function Analytics({ changePage, onLogout }) {
     const handleClickOutside = (event) => {
       if (profileRef.current && !profileRef.current.contains(event.target)) {
         setShowProfileCard(false);
+      }
+      if (supplierSearchRef.current && !supplierSearchRef.current.contains(event.target)) {
+        setShowSupplierDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -333,11 +340,27 @@ export default function Analytics({ changePage, onLogout }) {
     return [...new Set(names)].sort();
   }, [orders]);
 
+  const filteredSupplierList = useMemo(() => {
+    const q = supplierSearchQuery.trim().toLowerCase();
+    if (!q) return supplierList;
+    return supplierList.filter((sup) => sup.toLowerCase().includes(q));
+  }, [supplierList, supplierSearchQuery]);
+
   useEffect(() => {
     if (supplierList.length > 0 && !supplierList.includes(selectedSupplier)) {
       setSelectedSupplier(supplierList[0]);
     }
   }, [supplierList, selectedSupplier]);
+
+  useEffect(() => {
+    setSupplierSearchQuery(selectedSupplier || '');
+  }, [selectedSupplier]);
+
+  const handleSelectSupplier = (sup) => {
+    setSelectedSupplier(sup);
+    setSupplierSearchQuery(sup);
+    setShowSupplierDropdown(false);
+  };
 
   const supplierAnalysisData = useMemo(() => {
     const totalsPrev = new Array(12).fill(0);
@@ -651,12 +674,38 @@ export default function Analytics({ changePage, onLogout }) {
                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Select a supplier to compare USD spending between {comparisonYears.previous} and {comparisonYears.current}</p>
             </div>
 
-            <div className="max-w-xs">
+            <div className="max-w-xs relative" ref={supplierSearchRef}>
                <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Select Supplier</label>
-               <select value={selectedSupplier} onChange={(e) => setSelectedSupplier(e.target.value)} className={`w-full text-sm rounded-lg block p-2.5 outline-none transition-shadow ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}>
-                  {supplierList.length === 0 && <option value="">No supplier data available</option>}
-                  {supplierList.map((sup, idx) => <option key={idx} value={sup}>{sup}</option>)}
-               </select>
+               <div className="relative">
+                 <i className={`fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
+                 <input
+                   type="text"
+                   value={supplierSearchQuery}
+                   onChange={(e) => { setSupplierSearchQuery(e.target.value); setShowSupplierDropdown(true); }}
+                   onFocus={() => setShowSupplierDropdown(true)}
+                   placeholder="Search supplier..."
+                   className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
+                 />
+               </div>
+               {showSupplierDropdown && (
+                 <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
+                   {filteredSupplierList.length === 0 ? (
+                     <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                       {supplierList.length === 0 ? 'No supplier data available' : `No suppliers match "${supplierSearchQuery}"`}
+                     </div>
+                   ) : (
+                     filteredSupplierList.map((sup, idx) => (
+                       <div
+                         key={idx}
+                         onClick={() => handleSelectSupplier(sup)}
+                         className={`px-3 py-2 text-sm cursor-pointer transition-colors ${sup === selectedSupplier ? (isDarkMode ? 'bg-red-600/20 text-red-400' : 'bg-red-50 text-red-600') : (isDarkMode ? 'text-slate-200 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-100')}`}
+                       >
+                         {sup}
+                       </div>
+                     ))
+                   )}
+                 </div>
+               )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

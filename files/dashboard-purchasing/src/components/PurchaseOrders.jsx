@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
+import { API_ENDPOINTS } from '../utils/api.config';
 
 const usdFormatter = new Intl.NumberFormat('en-US', { 
   style: 'currency', 
@@ -131,7 +132,8 @@ export default function PurchaseOrders({
   // === 3. BACKEND API CALLS ===
   const fetchOrdersFromBackend = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/purchase-orders');
+      // ✅ FIX: Ganti '/api/purchase-orders' dengan API_ENDPOINTS.PURCHASE_ORDERS
+      const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
       if (response.ok) {
         const data = await response.json();
         const formattedOrders = data.map(po => ({
@@ -156,7 +158,8 @@ export default function PurchaseOrders({
 
   const fetchSuppliersFromBackend = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/suppliers');
+      // ✅ FIX: Ganti '/api/suppliers' dengan API_ENDPOINTS.SUPPLIERS
+      const response = await fetch(API_ENDPOINTS.SUPPLIERS);
       if (response.ok) {
         const data = await response.json();
         setDbSuppliers(data);
@@ -280,7 +283,8 @@ export default function PurchaseOrders({
       );
       const supplierId = formData.supplierId || (matchedSupplier ? matchedSupplier.id : 1);
 
-      const response = await fetch('http://localhost:5000/api/purchase-orders', {
+      // ✅ FIX: Ganti URL string dengan API_ENDPOINTS.PURCHASE_ORDERS
+      const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -309,7 +313,8 @@ export default function PurchaseOrders({
   const deletePO = async (id, poNumber) => {
     if (window.confirm(`Hapus dokumen ${poNumber || 'PO'} dari database?`)) {
       try {
-        const response = await fetch(`http://localhost:5000/api/purchase-orders/${id}`, { method: 'DELETE' });
+        // ✅ FIX: Gunakan API_ENDPOINTS untuk Delete
+        const response = await fetch(`${API_ENDPOINTS.PURCHASE_ORDERS}/${id}`, { method: 'DELETE' });
         if (response.ok) {
           showToast(`PO ${poNumber} berhasil dihapus.`, 'success');
           fetchOrdersFromBackend();
@@ -516,7 +521,8 @@ export default function PurchaseOrders({
               if (matchedSupplier) {
                 supplierId = matchedSupplier.id;
               } else {
-                const createRes = await fetch('http://localhost:5000/api/suppliers', {
+                // ✅ FIX: Gunakan API_ENDPOINTS
+                const createRes = await fetch(API_ENDPOINTS.SUPPLIERS, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ name: row.supplierName, status: 'Active' })
@@ -527,8 +533,9 @@ export default function PurchaseOrders({
                 }
               }
             }
-
-            const response = await fetch('http://localhost:5000/api/purchase-orders', {
+            
+            // ✅ FIX: Gunakan API_ENDPOINTS
+            const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({

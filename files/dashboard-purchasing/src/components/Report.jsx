@@ -63,7 +63,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
       }
 
       try {
-        const response = await fetch('http://localhost:5000/api/purchase-orders');
+        const response = await fetch('http://idws-n26010:5000/api/purchase-orders');
         if (response.ok) {
           const data = await response.json();
           setOrders(data);
@@ -180,7 +180,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
     // 1. Simpan catatan riwayat ke tabel 'reports' di MySQL
     try {
-      await fetch('http://localhost:5000/api/reports', {
+      await fetch('http://idws-n26010:5000/api/reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
