@@ -4,7 +4,21 @@ import { useTheme } from '../hooks/useTheme';
 import { API_ENDPOINTS } from '../utils/api.config';
 
 // === CONVERSION RATE ===
-const KURS_IDR_TO_USD = 15500;
+// Kurs IDR per 1 USD berdasarkan tahun transaksi (disamakan dengan PurchaseOrders.jsx)
+const KURS_PER_TAHUN = {
+  2023: 15331,
+  2024: 15926,
+  2025: 16557,
+  2026: 17505
+};
+
+const getKurs = (year) => {
+  const years = Object.keys(KURS_PER_TAHUN).map(Number);
+  const y = parseInt(year, 10);
+  if (Number.isNaN(y)) return KURS_PER_TAHUN[Math.max(...years)];
+  const nearest = Math.min(Math.max(y, Math.min(...years)), Math.max(...years));
+  return KURS_PER_TAHUN[nearest];
+};
 
 // Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
 // Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
@@ -20,6 +34,7 @@ const saveOrdersCache = (rows) => {
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [suppliersMap, setSuppliersMap] = useState({});
   const [supplierParetoTab, setSupplierParetoTab] = useState('top20');
   const [selectedCategory, setSelectedCategory] = useState('All');
@@ -88,6 +103,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     // -> bentuk objek yang dipakai Dashboard
     const toOrder = (po) => {
       const rawDate = po.receipt_date || po.receiptDate || po.po_date || po.order_date || po.date;
+      const usd = po.spending_usd ?? po.spendingUsd ?? po.totalUsd;
       return {
         id: po.id,
         poNumber: po.po_number || po.poNumber || po.po_no,
@@ -95,6 +111,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
         supplier_id: po.supplier_id,
         totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0),
+        totalUsd: usd === undefined || usd === null ? null : Number(usd),
         status: po.status || po.order_status || 'Pending',
         // Kategori dari Product Group (mis. "RM - Plastic", "SP - Spare Parts"); 0/kosong = belum diklasifikasi
         category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Other',
@@ -137,6 +154,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       } catch (e) {
         console.error('Failed to fetch Purchase Orders from database:', e);
         loadFromLocalCache();
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -160,8 +179,14 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   // === 2. DATA HELPER GETTERS ===
+  // Mengembalikan total order dalam USD (bukan IDR mentah).
+  // Prioritas: kolom spending_usd dari database (sudah dihitung per kurs tahun transaksi).
+  // Fallback: konversi total IDR memakai kurs sesuai tahun order (KURS_PER_TAHUN), bukan kurs flat.
   const getOrderTotal = (order) => {
     if (!order) return 0;
+
+    if (Number.isFinite(order.totalUsd) && order.totalUsd > 0) return order.totalUsd;
+
     const possibleKeys = [
       'totalCost', 'TotalCost', 'total_cost',
       'totalNilai', 'TotalNilai', 'total_nilai',
@@ -176,6 +201,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       }
     }
 
+    let totalIDR = 0;
+
     if ((rawValue === undefined || rawValue === 0) && order.items && Array.isArray(order.items) && order.items.length > 0) {
       let calc = 0;
       order.items.forEach((item) => {
@@ -184,16 +211,17 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         if (typeof p === 'string') p = parseFloat(p.replace(/[^0-9]/g, '')) || 0;
         calc += q * p;
       });
-      if (calc > 0) return calc;
-    }
-
-    if (typeof rawValue === 'string') {
+      totalIDR = calc;
+    } else if (typeof rawValue === 'string') {
       let cleanText = rawValue.replace(/Rp/gi, '').replace(/\s/g, '').replace(/\./g, '');
       cleanText = cleanText.replace(/,/g, '.');
-      return parseFloat(cleanText) || 0;
+      totalIDR = parseFloat(cleanText) || 0;
+    } else {
+      totalIDR = parseFloat(rawValue) || 0;
     }
 
-    return parseFloat(rawValue) || 0;
+    const year = order.date ? new Date(order.date).getFullYear() : undefined;
+    return totalIDR / getKurs(year);
   };
 
   const getOrderDate = (order) => order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '-';
@@ -223,19 +251,20 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   // === USD FORMATTER HELPERS ===
-  const formatUSD = (numberInIDR) => {
-    const amountInUSD = (numberInIDR || 0) / KURS_IDR_TO_USD;
+  // Catatan: input sekarang sudah dalam USD (getOrderTotal sudah mengonversi per kurs tahun transaksi),
+  // jadi fungsi ini hanya memformat, tidak membagi kurs lagi.
+  const formatUSD = (amountInUSD) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
-    }).format(amountInUSD);
+    }).format(amountInUSD || 0);
   };
 
-  const formatShortUSD = (valInIDR) => {
-    if (!valInIDR || valInIDR === 0) return '$0';
-    const val = valInIDR / KURS_IDR_TO_USD;
+  const formatShortUSD = (valInUSD) => {
+    if (!valInUSD || valInUSD === 0) return '$0';
+    const val = valInUSD;
     if (val >= 1_000_000_000) {
       const v = (val / 1_000_000_000).toFixed(1);
       return '$' + (v.endsWith('.0') ? v.slice(0, -2) : v) + 'B';
@@ -339,8 +368,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         value: catMap[catName]
       }));
     
-    const currentMax = categories.length > 0 ? categories[0].value : 1_400_000_000;
-    maxVal = Math.max(currentMax, 100_000);
+    // Floor kecil hanya untuk jaga-jaga saat data kosong/kecil, bukan skala IDR lama.
+    const currentMax = categories.length > 0 ? categories[0].value : 1;
+    maxVal = Math.max(currentMax, 1);
 
     return { categories, maxVal };
   }, [yearFilteredOrders, barChartGroup]);
@@ -736,7 +766,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       }
     });
 
-    const maxVal = Math.max(...monthlyTotals, 1_600_000_000);
+    // Floor kecil hanya untuk jaga-jaga pembagian dengan nol saat data kosong,
+    // BUKAN nilai skala tetap — skala grafik harus mengikuti data USD aktual.
+    const maxVal = Math.max(...monthlyTotals, 1);
     return { months, monthlyTotals, maxVal };
   }, [yearFilteredOrders]);
 
@@ -1535,7 +1567,25 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      
+
+      {/* TOP LOADING BAR (muncul selama data Purchase Orders masih di-fetch dari backend) */}
+      {isLoading && (
+        <>
+          <style>{`
+            @keyframes dpkLoadingBar {
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(400%); }
+            }
+          `}</style>
+          <div className="fixed top-0 left-0 w-full h-[3px] z-[100] overflow-hidden bg-transparent">
+            <div
+              className="h-full w-1/4 bg-red-600 rounded-full"
+              style={{ animation: 'dpkLoadingBar 1.1s linear infinite' }}
+            />
+          </div>
+        </>
+      )}
+
       {/* MAIN HEADER */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
@@ -1778,7 +1828,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                 <h3 className={`font-bold text-center text-sm mb-6 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Cost by Month Name (USD)</h3>
                 <div className="w-full h-64 relative">
                   <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
-                    {[1_600_000_000, 1_200_000_000, 800_000_000, 400_000_000, 0].map((labelVal, i) => {
+                    {[monthlyStats.maxVal, monthlyStats.maxVal * 0.75, monthlyStats.maxVal * 0.5, monthlyStats.maxVal * 0.25, 0].map((labelVal, i) => {
                       const y = 30 + i * 40;
                       return (
                         <g key={i}>
@@ -1821,7 +1871,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   </div>
                   {renderDrilldownPieChart()}
                 </div>
-
                 {/* PIE CHART 2: IMPORT VS LOCAL */}
                 <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-full text-left mb-2">
@@ -1833,7 +1882,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   {renderOriginPieChart()}
                 </div>
               </div>
-
               {/* BAR CHART / PARETO CATEGORY */}
               <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">

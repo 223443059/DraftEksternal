@@ -642,35 +642,82 @@ app.post('/api/reports', async (req, res) => {
 // =================================================================
 // 11. ENDPOINT CLEAR DATA OPERASIONAL
 // =================================================================
+// Mapping modul (checkbox di frontend) -> tabel & kolom tanggal untuk filter periode.
+// 'suppliers' tidak difilter periode karena tabelnya memang tidak punya kolom tanggal.
+// 'analytics' diarahkan ke purchase_orders karena tidak ada tabel analytics sendiri.
+// ⚠️ 'reports.created_at' adalah asumsi — sesuaikan kalau nama kolom tanggalnya beda.
+const CLEAR_DATA_CONFIG = {
+  suppliers:      { table: 'suppliers',       dateColumn: null },
+  purchaseOrders: { table: 'purchase_orders', dateColumn: 'receipt_date' },
+  analytics:      { table: 'purchase_orders', dateColumn: 'receipt_date' },
+  report:         { table: 'reports',         dateColumn: 'created_at' },
+};
+
 app.delete('/api/system/clear-data', async (req, res) => {
-  const { modules } = req.body;
+  const { modules, month, year } = req.body;
   if (!modules || !Array.isArray(modules) || modules.length === 0) {
     return res.status(400).json({ success: false, message: 'Pilih minimal satu modul.' });
+  }
+
+  const hasMonth = month !== undefined && month !== null && month !== '';
+  const hasYear = year !== undefined && year !== null && year !== '';
+  const monthNum = hasMonth ? Number(month) : null;
+  const yearNum = hasYear ? Number(year) : null;
+
+  if (hasMonth && (!Number.isInteger(monthNum) || monthNum < 1 || monthNum > 12)) {
+    return res.status(400).json({ success: false, message: 'Bulan tidak valid.' });
+  }
+  if (hasYear && (!Number.isInteger(yearNum) || yearNum < 2000 || yearNum > 2100)) {
+    return res.status(400).json({ success: false, message: 'Tahun tidak valid.' });
+  }
+  const useDateFilter = hasMonth && hasYear;
+
+  // Dedupe tabel yang sama (mis. 'analytics' & 'purchaseOrders' sama-sama purchase_orders)
+  const seenTables = new Set();
+  const targets = [];
+  for (const moduleName of modules) {
+    const config = CLEAR_DATA_CONFIG[moduleName];
+    if (!config || seenTables.has(config.table)) continue;
+    seenTables.add(config.table);
+    targets.push({ moduleName, ...config });
+  }
+
+  if (targets.length === 0) {
+    return res.status(400).json({ success: false, message: 'Modul yang dipilih tidak dikenali.' });
   }
 
   let connection;
   try {
     connection = await pool.getConnection();
     await connection.beginTransaction();
-
     await connection.query('SET FOREIGN_KEY_CHECKS = 0');
+
     const deletedSummary = {};
 
-    for (const moduleName of modules) {
-      if (moduleName === 'suppliers') {
-        const [resSupp] = await connection.query('DELETE FROM suppliers');
-        await connection.query('ALTER TABLE suppliers AUTO_INCREMENT = 1');
-        deletedSummary.suppliers = resSupp.affectedRows;
-      } else if (moduleName === 'purchaseOrders') {
-        const [resPO] = await connection.query('DELETE FROM purchase_orders');
-        await connection.query('ALTER TABLE purchase_orders AUTO_INCREMENT = 1');
-        deletedSummary.purchaseOrders = resPO.affectedRows;
+    for (const { moduleName, table, dateColumn } of targets) {
+      // Filter tanggal hanya dipakai kalau tabelnya punya kolom tanggal DAN user memang memilih bulan+tahun
+      if (useDateFilter && dateColumn) {
+        const [result] = await connection.query(
+          `DELETE FROM ${table} WHERE MONTH(${dateColumn}) = ? AND YEAR(${dateColumn}) = ?`,
+          [monthNum, yearNum]
+        );
+        deletedSummary[moduleName] = result.affectedRows;
+      } else {
+        const [result] = await connection.query(`DELETE FROM ${table}`);
+        await connection.query(`ALTER TABLE ${table} AUTO_INCREMENT = 1`);
+        deletedSummary[moduleName] = result.affectedRows;
       }
     }
 
     await connection.query('SET FOREIGN_KEY_CHECKS = 1');
     await connection.commit();
-    return res.status(200).json({ success: true, message: 'Data berhasil dibersihkan.', deletedRows: deletedSummary });
+    return res.status(200).json({
+      success: true,
+      message: useDateFilter
+        ? `Data pada periode ${monthNum}/${yearNum} berhasil dibersihkan dari modul terpilih.`
+        : 'Data berhasil dibersihkan.',
+      deletedRows: deletedSummary
+    });
   } catch (error) {
     if (connection) {
       await connection.rollback();

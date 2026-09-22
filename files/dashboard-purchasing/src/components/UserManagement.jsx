@@ -96,6 +96,7 @@ export default function UserManagement({ changePage, onLogout, user: propUser })
   });
 
   const [isLoadingClear, setIsLoadingClear] = useState(false); 
+  const [clearFilters, setClearFilters] = useState({ month: '', year: '' }); // '' = Semua (tanpa filter periode)
   const [createForm, setCreateForm] = useState(emptyCreateForm);
   const [roleEditValue, setRoleEditValue] = useState('');
   const [pwEditValue, setPwEditValue] = useState('');
@@ -287,6 +288,12 @@ const authHeaders = () => {
     setDataToClear((prev) => ({ ...prev, [name]: checked }));
   };
 
+  // Handler Filter Bulan/Tahun Data Clear
+  const handleClearFilterChange = (e) => {
+    const { name, value } = e.target;
+    setClearFilters((prev) => ({ ...prev, [name]: value }));
+  };
+
   // Handler Hapus Data Spesifik
   const handleClearSelectedData = async () => {
     setError('');
@@ -301,14 +308,18 @@ const authHeaders = () => {
     }
    
     try {
-      console.log('🔄 Mengirim request delete ke backend...', { modules: selectedModules });
+      const payload = { modules: selectedModules };
+      if (clearFilters.month) payload.month = Number(clearFilters.month);
+      if (clearFilters.year) payload.year = Number(clearFilters.year);
+
+      console.log('🔄 Mengirim request delete ke backend...', payload);
    
       // Pakai host backend yang sama dengan API user (langsung ke :5000), bukan lewat proxy Vite
       const backendOrigin = new URL(API_BASE, window.location.origin).origin;
       const res = await fetch(`${backendOrigin}/api/system/clear-data`, {
         method: 'DELETE',
         headers: authHeaders(),
-        body: JSON.stringify({ modules: selectedModules }), 
+        body: JSON.stringify(payload), 
       });
    
       // Baca body apa adanya, lalu coba parse JSON (error 500 sering bukan JSON)
@@ -333,6 +344,7 @@ const authHeaders = () => {
         analytics: false,
         report: false
       });
+      setClearFilters({ month: '', year: '' });
       
       flash('Data operasional terpilih berhasil dibersihkan!');
    
@@ -903,11 +915,60 @@ const authHeaders = () => {
                 ))}
               </div>
 
+              {/* Filter Periode: Bulan & Tahun */}
+              <div className={`mb-6 p-4 rounded-xl border ${isDarkMode ? 'border-slate-700 bg-[#0F172A]/50' : 'border-slate-200 bg-slate-50'}`}>
+                <p className={`text-sm font-semibold mb-3 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                  Filter Periode Data <span className="font-normal text-slate-400">(opsional)</span>
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={`block text-xs font-semibold mb-1.5 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Bulan</label>
+                    <select
+                      name="month"
+                      value={clearFilters.month}
+                      onChange={handleClearFilterChange}
+                      className={`w-full px-3 py-2.5 rounded-lg border text-sm cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#E31837] ${
+                        isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      <option value="">Semua Bulan</option>
+                      {[
+                        'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+                        'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+                      ].map((m, idx) => (
+                        <option key={idx + 1} value={idx + 1}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className={`block text-xs font-semibold mb-1.5 ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Tahun</label>
+                    <select
+                      name="year"
+                      value={clearFilters.year}
+                      onChange={handleClearFilterChange}
+                      className={`w-full px-3 py-2.5 rounded-lg border text-sm cursor-pointer focus:outline-none focus:ring-1 focus:ring-[#E31837] ${
+                        isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'
+                      }`}
+                    >
+                      <option value="">Semua Tahun</option>
+                      {Array.from({ length: 6 }, (_, i) => new Date().getFullYear() - i).map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <p className={`text-xs mt-3 leading-relaxed ${isDarkMode ? 'text-slate-500' : 'text-slate-400'}`}>
+                  {clearFilters.month || clearFilters.year
+                    ? 'Hanya data pada periode ini yang akan dihapus dari modul terpilih.'
+                    : 'Kosongkan untuk menghapus seluruh data (semua periode) dari modul terpilih.'}
+                </p>
+              </div>
+
               {/* Action Buttons */}
               <div className="flex items-center justify-between gap-4 w-full">
                 <button
                   type="button"
-                  onClick={() => setShowClearModal(false)}
+                  onClick={() => { setShowClearModal(false); setClearFilters({ month: '', year: '' }); setError(''); }}
                   className={`flex-1 py-3.5 rounded-xl text-[15px] font-bold transition-colors cursor-pointer ${
                     isDarkMode 
                       ? 'bg-slate-700 text-white hover:bg-slate-600' 

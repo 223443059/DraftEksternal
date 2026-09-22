@@ -3,7 +3,22 @@ import { useRole } from '../context/RoleContext';
 import { API_ENDPOINTS } from '../utils/api.config';
 
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
-const EXCHANGE_RATE_IDR_TO_USD = 16000; // dipakai hanya jika baris tidak punya Spending USD
+// Kurs IDR per 1 USD berdasarkan tahun transaksi (disamakan dengan PurchaseOrders.jsx & Dashboard.jsx)
+// Dipakai hanya sebagai fallback jika baris tidak punya Spending USD dari database.
+const KURS_PER_TAHUN = {
+  2023: 15331,
+  2024: 15926,
+  2025: 16557,
+  2026: 17505
+};
+
+const getKurs = (year) => {
+  const years = Object.keys(KURS_PER_TAHUN).map(Number);
+  const y = parseInt(year, 10);
+  if (Number.isNaN(y)) return KURS_PER_TAHUN[Math.max(...years)];
+  const nearest = Math.min(Math.max(y, Math.min(...years)), Math.max(...years));
+  return KURS_PER_TAHUN[nearest];
+};
 
 // Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
 // Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
@@ -91,8 +106,9 @@ const getOrderTotal = (order) => {
     totalIDR = parseFloat(rawValue) || 0;
   }
 
-  // Konversi dari IDR ke USD
-  return totalIDR / EXCHANGE_RATE_IDR_TO_USD;
+  // Konversi dari IDR ke USD memakai kurs sesuai tahun order (bukan kurs flat)
+  const year = getOrderDate(order) ? new Date(getOrderDate(order)).getFullYear() : undefined;
+  return totalIDR / getKurs(year);
 };
 
 const getOrderDate = (order) => order.order_date || order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '';
@@ -156,6 +172,7 @@ export default function Analytics({ changePage, onLogout }) {
 
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [suppliersMap, setSuppliersMap] = useState({});
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -181,6 +198,14 @@ export default function Analytics({ changePage, onLogout }) {
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const supplierSearchRef = useRef(null);
   const [activeTab, setActiveTab] = useState('overview');
+
+  // State untuk Compare Supplier
+  const MAX_COMPARE_SUPPLIERS = 6;
+  const COMPARE_SUPPLIER_COLORS = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#DB2777'];
+  const [compareSuppliers, setCompareSuppliers] = useState([]);
+  const [compareSupplierSearch, setCompareSupplierSearch] = useState('');
+  const [showCompareDropdown, setShowCompareDropdown] = useState(false);
+  const compareSearchRef = useRef(null);
   
   // State untuk Category Breakdown
   const [selectedCategory, setSelectedCategory] = useState(null);
@@ -189,6 +214,7 @@ export default function Analytics({ changePage, onLogout }) {
   const analyticsTabs = [
     { id: 'overview', label: 'Overview & Trend', icon: 'fa-chart-line' },
     { id: 'supplier', label: 'Supplier Analysis', icon: 'fa-users' },
+    { id: 'compareSupplier', label: 'Compare Supplier', icon: 'fa-scale-balanced' },
     { id: 'category', label: 'Category Breakdown', icon: 'fa-tags' },
   ];
 
@@ -281,6 +307,8 @@ export default function Analytics({ changePage, onLogout }) {
         }
       } catch (e) {
         loadFromCache();
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -294,6 +322,9 @@ export default function Analytics({ changePage, onLogout }) {
       }
       if (supplierSearchRef.current && !supplierSearchRef.current.contains(event.target)) {
         setShowSupplierDropdown(false);
+      }
+      if (compareSearchRef.current && !compareSearchRef.current.contains(event.target)) {
+        setShowCompareDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -382,6 +413,63 @@ export default function Analytics({ changePage, onLogout }) {
     setShowSupplierDropdown(false);
   };
 
+  // === COMPARE SUPPLIER: helpers & data ===
+  const compareSupplierOptions = useMemo(() => {
+    const q = compareSupplierSearch.trim().toLowerCase();
+    return supplierList.filter((sup) => !compareSuppliers.includes(sup) && (!q || sup.toLowerCase().includes(q)));
+  }, [supplierList, compareSupplierSearch, compareSuppliers]);
+
+  const handleAddCompareSupplier = (sup) => {
+    setCompareSuppliers((prev) => (prev.includes(sup) || prev.length >= MAX_COMPARE_SUPPLIERS ? prev : [...prev, sup]));
+    setCompareSupplierSearch('');
+    setShowCompareDropdown(false);
+  };
+
+  const handleRemoveCompareSupplier = (sup) => {
+    setCompareSuppliers((prev) => prev.filter((s) => s !== sup));
+  };
+
+  const compareSupplierData = useMemo(() => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    const rows = compareSuppliers.map((sup, idx) => {
+      let totalSpend = 0;
+      let totalOrders = 0;
+      const monthly = new Array(12).fill(0);
+
+      orders.forEach((order) => {
+        if (getOrderSupplier(order) !== sup) return;
+        const yr = getYearFromOrder(order);
+        if (selectedYear !== 'All' && yr !== parseInt(selectedYear)) return;
+
+        const cost = getOrderTotal(order);
+        totalSpend += cost;
+        totalOrders += 1;
+
+        const dateStr = getOrderDate(order);
+        if (dateStr) {
+          const d = new Date(dateStr);
+          if (!isNaN(d.getTime())) monthly[d.getMonth()] += cost;
+        }
+      });
+
+      return {
+        name: sup,
+        color: COMPARE_SUPPLIER_COLORS[idx % COMPARE_SUPPLIER_COLORS.length],
+        totalSpend,
+        totalOrders,
+        avgPO: totalOrders > 0 ? totalSpend / totalOrders : 0,
+        monthly
+      };
+    });
+
+    const combinedTotal = rows.reduce((sum, r) => sum + r.totalSpend, 0);
+    const maxSpend = Math.max(...rows.map((r) => r.totalSpend), 1);
+    const maxMonthly = Math.max(...rows.flatMap((r) => r.monthly), 1);
+
+    return { months, rows, combinedTotal, maxSpend, maxMonthly };
+  }, [orders, compareSuppliers, selectedYear]);
+
   const supplierAnalysisData = useMemo(() => {
     const totalsPrev = new Array(12).fill(0);
     const totalsCurrent = new Array(12).fill(0);
@@ -457,7 +545,25 @@ export default function Analytics({ changePage, onLogout }) {
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      
+
+      {/* TOP LOADING BAR (muncul selama data Purchase Orders masih di-fetch dari backend) */}
+      {isLoading && (
+        <>
+          <style>{`
+            @keyframes dpkLoadingBar {
+              0% { transform: translateX(-100%); }
+              100% { transform: translateX(400%); }
+            }
+          `}</style>
+          <div className="fixed top-0 left-0 w-full h-[3px] z-[100] overflow-hidden bg-transparent">
+            <div
+              className="h-full w-1/4 bg-red-600 rounded-full"
+              style={{ animation: 'dpkLoadingBar 1.1s linear infinite' }}
+            />
+          </div>
+        </>
+      )}
+
       {/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
@@ -942,6 +1048,185 @@ export default function Analytics({ changePage, onLogout }) {
                 </>
               )}
             </div>
+          </div>
+          )}
+
+          {/* COMPARE SUPPLIER */}
+          {activeTab === 'compareSupplier' && (
+          <div className={`p-6 rounded-2xl border shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+            <div>
+              <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Compare Supplier (USD)</h3>
+              <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>
+                Pilih hingga {MAX_COMPARE_SUPPLIERS} supplier untuk dibandingkan spend-nya {selectedYear === 'All' ? '(All Time)' : `di tahun ${selectedYear}`}.
+              </p>
+            </div>
+
+            {/* PICKER */}
+            <div className="max-w-md relative" ref={compareSearchRef}>
+              <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Tambah Supplier</label>
+              <div className="relative">
+                <i className={`fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
+                <input
+                  type="text"
+                  value={compareSupplierSearch}
+                  onChange={(e) => { setCompareSupplierSearch(e.target.value); setShowCompareDropdown(true); }}
+                  onFocus={() => setShowCompareDropdown(true)}
+                  disabled={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS}
+                  placeholder={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS ? `Maksimal ${MAX_COMPARE_SUPPLIERS} supplier` : 'Cari & tambah supplier...'}
+                  className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
+                />
+              </div>
+              {showCompareDropdown && compareSuppliers.length < MAX_COMPARE_SUPPLIERS && (
+                <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
+                  {compareSupplierOptions.length === 0 ? (
+                    <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                      {supplierList.length === 0 ? 'No supplier data available' : 'No matching suppliers'}
+                    </div>
+                  ) : (
+                    compareSupplierOptions.map((sup, idx) => (
+                      <div
+                        key={idx}
+                        onClick={() => handleAddCompareSupplier(sup)}
+                        className={`px-3 py-2 text-sm cursor-pointer transition-colors ${isDarkMode ? 'text-slate-200 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-100'}`}
+                      >
+                        {sup}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* SELECTED PILLS */}
+            {compareSupplierData.rows.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {compareSupplierData.rows.map((row) => (
+                  <span
+                    key={row.name}
+                    className={`inline-flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full text-xs font-semibold border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-200' : 'bg-gray-50 border-gray-200 text-gray-700'}`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: row.color }}></span>
+                    {row.name}
+                    <button
+                      onClick={() => handleRemoveCompareSupplier(row.name)}
+                      className={`ml-1 rounded-full w-4 h-4 flex items-center justify-center text-[10px] cursor-pointer transition-colors ${isDarkMode ? 'hover:bg-slate-700 text-slate-400' : 'hover:bg-gray-200 text-gray-500'}`}
+                    >
+                      <i className="fa-solid fa-xmark"></i>
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {compareSupplierData.rows.length === 0 ? (
+              <div className={`h-48 flex items-center justify-center text-sm text-center px-6 border border-dashed rounded-xl ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-700 text-slate-500' : 'bg-gray-50/50 border-gray-200 text-gray-400'}`}>
+                Belum ada supplier dipilih. Cari &amp; tambahkan minimal 2 supplier di atas untuk mulai membandingkan.
+              </div>
+            ) : (
+              <>
+                {/* SUMMARY TABLE */}
+                <div className="overflow-x-auto rounded-lg border border-gray-200/60 dark:border-slate-700">
+                  <table className={`w-full text-left text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                    <thead className={`text-xs uppercase bg-gray-50 dark:bg-slate-800/50 border-b ${isDarkMode ? 'border-slate-700 text-slate-400' : 'border-gray-200 text-gray-500'}`}>
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Supplier</th>
+                        <th className="px-4 py-3 font-semibold text-right">Total Spend (USD)</th>
+                        <th className="px-4 py-3 font-semibold text-right">Total Orders</th>
+                        <th className="px-4 py-3 font-semibold text-right">Avg PO Value</th>
+                        <th className="px-4 py-3 font-semibold text-right">Share</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...compareSupplierData.rows].sort((a, b) => b.totalSpend - a.totalSpend).map((row) => (
+                        <tr key={row.name} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/30' : 'border-gray-100 hover:bg-gray-50'}`}>
+                          <td className="px-4 py-3 font-semibold">
+                            <span className="inline-flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: row.color }}></span>
+                              {row.name}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right font-bold text-red-500">{formatUSD(row.totalSpend)}</td>
+                          <td className="px-4 py-3 text-right">{row.totalOrders.toLocaleString('en-US')}</td>
+                          <td className="px-4 py-3 text-right">{formatUSD(row.avgPO)}</td>
+                          <td className="px-4 py-3 text-right">
+                            {compareSupplierData.combinedTotal > 0 ? ((row.totalSpend / compareSupplierData.combinedTotal) * 100).toFixed(1) : '0.0'}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* TOTAL SPEND BAR COMPARISON */}
+                <div>
+                  <h4 className={`font-bold text-sm mb-4 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Spend Comparison</h4>
+                  <div className="space-y-3">
+                    {[...compareSupplierData.rows].sort((a, b) => b.totalSpend - a.totalSpend).map((row) => {
+                      const pct = compareSupplierData.maxSpend > 0 ? (row.totalSpend / compareSupplierData.maxSpend) * 100 : 0;
+                      return (
+                        <div key={row.name}>
+                          <div className="flex items-center justify-between mb-1 text-xs font-semibold">
+                            <span className={isDarkMode ? 'text-slate-300' : 'text-gray-700'}>{row.name}</span>
+                            <span className={isDarkMode ? 'text-slate-400' : 'text-gray-500'}>{formatUSD(row.totalSpend)}</span>
+                          </div>
+                          <div className={`w-full h-3 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
+                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: row.color }}></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* MONTHLY TREND MULTI-LINE CHART */}
+                <div>
+                  <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3">
+                    <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>
+                      Monthly Trend {selectedYear === 'All' ? '(All Time, gabungan per bulan)' : `(${selectedYear})`}
+                    </h4>
+                    <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold">
+                      {compareSupplierData.rows.map((row) => (
+                        <div key={row.name} className="flex items-center gap-1.5" style={{ color: row.color }}>
+                          <span className="w-3 h-3 rounded" style={{ backgroundColor: row.color }}></span>{row.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="w-full h-64 relative">
+                    <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
+                      {[4, 3, 2, 1, 0].map((step, i) => {
+                        const y = 30 + i * 40;
+                        const gridVal = (compareSupplierData.maxMonthly * step) / 4;
+                        return (
+                          <g key={i}>
+                            <line x1="40" y1={y} x2="960" y2={y} stroke={isDarkMode ? '#334155' : '#F3F4F6'} strokeDasharray="4 4" />
+                            <text x="30" y={y + 4} textAnchor="end" className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>
+                              {formatShortNumber(gridVal)}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      {compareSupplierData.rows.map((row) => (
+                        <path
+                          key={row.name}
+                          d={generateSvgPath(row.monthly, compareSupplierData.maxMonthly)}
+                          fill="none"
+                          stroke={row.color}
+                          strokeWidth="2.5"
+                          strokeLinecap="round"
+                        />
+                      ))}
+                      {compareSupplierData.months.map((m, idx) => {
+                        const x = (idx / 11) * 920 + 40;
+                        return (
+                          <text key={idx} x={x} y="222" textAnchor="middle" className={`text-[11px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{m}</text>
+                        );
+                      })}
+                    </svg>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
           )}
         </main>

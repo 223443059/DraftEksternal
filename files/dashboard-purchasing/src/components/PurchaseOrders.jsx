@@ -248,6 +248,7 @@ export default function PurchaseOrders({
 
   // === 1. STATE MANAGEMENT ===
   const [localOrders, setLocalOrders] = useState([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(true);
   const [dbSuppliers, setDbSuppliers] = useState([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [showProfileCard, setShowProfileCard] = useState(false);
@@ -328,6 +329,7 @@ export default function PurchaseOrders({
 
   // === 3. BACKEND API CALLS ===
   const fetchOrdersFromBackend = async () => {
+    setIsLoadingOrders(true);
     try {
       const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
       if (response.ok) {
@@ -341,6 +343,8 @@ export default function PurchaseOrders({
     } catch (error) {
       console.error('Failed to fetch PO data from database:', error);
       loadFromIndexedDBCache();
+    } finally {
+      setIsLoadingOrders(false);
     }
   };
 
@@ -672,6 +676,19 @@ export default function PurchaseOrders({
       return;
     }
 
+    // CEK DUPLIKAT: kombinasi PO Number + PO Line + Pack Slip harus unik.
+    // Dikecualikan baris yang sedang diedit sendiri (editingId), supaya edit tanpa
+    // ganti nilai-nilai itu tidak dianggap bentrok dengan dirinya sendiri.
+    const candidateKey = rowKey({ poNumber, poLine: formData.poLine, packSlip: formData.packSlip });
+    const isDuplicate = orders.some((o) => o.id !== editingId && rowKey(o) === candidateKey);
+    if (isDuplicate) {
+      showToast(
+        `Duplicate data: PO ${poNumber}${formData.poLine ? ` line ${formData.poLine}` : ''}${formData.packSlip ? ` / pack slip ${formData.packSlip}` : ''} already exists.`,
+        'error'
+      );
+      return;
+    }
+
     const payload = buildPayload({
       ...formData,
       poNumber,
@@ -697,7 +714,7 @@ export default function PurchaseOrders({
         fetchSuppliersFromBackend();
         closeModal();
       } else {
-        showToast('Failed to save PO', 'error');
+        showToast(result.message || 'Failed to save PO', 'error');
       }
     } catch (error) {
       console.error('Failed to submit PO:', error);
@@ -771,6 +788,23 @@ export default function PurchaseOrders({
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+
+      {/* TOP LOADING BAR */}
+      {isLoadingOrders && (
+        <div className="fixed top-0 left-0 w-full h-[3px] z-[100] bg-transparent overflow-hidden">
+          <style>{`
+            @keyframes dashboardTopLoadingBar {
+              0% { left: -40%; width: 40%; opacity: 1; }
+              90% { left: 100%; width: 40%; opacity: 1; }
+              100% { left: 100%; width: 40%; opacity: 0; }
+            }
+          `}</style>
+          <div
+            className="absolute top-0 h-full bg-gradient-to-r from-red-500 via-red-600 to-red-500 shadow-[0_0_8px_rgba(220,38,38,0.6)]"
+            style={{ animation: 'dashboardTopLoadingBar 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite' }}
+          />
+        </div>
+      )}
       
       {/* TOAST NOTIFICATION */}
       {toast.show && (

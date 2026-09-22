@@ -1,12 +1,59 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRole } from '../context/RoleContext';
 
+// ---------------------------------------------------------------------------
+// INDEXEDDB CACHE — supaya halaman Report langsung tampil dengan data terakhir
+// (instan, dari disk) sambil data terbaru diambil dari backend di belakang layar.
+// Cache-nya dibuat terpisah dari PurchaseOrders.jsx (struktur JSON beda), tidak
+// bentrok satu sama lain.
+// ---------------------------------------------------------------------------
+const REPORT_IDB_NAME = 'DetpakReport_DB';
+const REPORT_IDB_STORE = 'report_cache';
+const REPORT_CACHE_KEY = 'purchaseOrdersRaw';
+
+const initReportIDB = () => new Promise((resolve, reject) => {
+  const request = indexedDB.open(REPORT_IDB_NAME, 1);
+  request.onupgradeneeded = (e) => {
+    const db = e.target.result;
+    if (!db.objectStoreNames.contains(REPORT_IDB_STORE)) {
+      db.createObjectStore(REPORT_IDB_STORE);
+    }
+  };
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+
+const setReportCache = async (rows) => {
+  try {
+    const db = await initReportIDB();
+    const tx = db.transaction(REPORT_IDB_STORE, 'readwrite');
+    tx.objectStore(REPORT_IDB_STORE).put(rows, REPORT_CACHE_KEY);
+  } catch (err) {
+    console.warn('Failed to save Report cache to IndexedDB:', err);
+  }
+};
+
+const getReportCache = async () => {
+  try {
+    const db = await initReportIDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(REPORT_IDB_STORE, 'readonly');
+      const req = tx.objectStore(REPORT_IDB_STORE).get(REPORT_CACHE_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (err) {
+    return null;
+  }
+};
+
 export default function Report({ changePage, onLogout, orders: propOrders }) {
   const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
   const EXCHANGE_RATE = 15500;
 
   const [orders, setOrders] = useState([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(true);
   const [isReportOpen, setIsReportOpen] = useState(true);
   const [activeReportTab, setActiveReportTab] = useState('generate');
 
@@ -54,31 +101,63 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Durasi minimum garis loading tampil, supaya walau data sudah siap duluan
+  // (mis. langsung ketemu di cache IndexedDB), animasinya tetap sempat menyapu
+  // penuh dari kiri ke kanan dulu sebelum disembunyikan — tidak cuma "kedip".
+  const MIN_LOADING_MS = 900;
+
   // FETCH DATA PURCHASE ORDERS DARI BACKEND DATABASE
   useEffect(() => {
+    const loadStartedAt = Date.now();
+    const hideLoadingSoftly = () => {
+      const elapsed = Date.now() - loadStartedAt;
+      const remaining = MIN_LOADING_MS - elapsed;
+      if (remaining > 0) {
+        setTimeout(() => setIsLoadingOrders(false), remaining);
+      } else {
+        setIsLoadingOrders(false);
+      }
+    };
+
     const fetchPurchaseOrders = async () => {
       if (Array.isArray(propOrders) && propOrders.length > 0) {
         setOrders(propOrders);
+        hideLoadingSoftly();
         return;
       }
 
+      // 1. Tampilkan dulu data terakhir dari cache (kalau ada) — supaya halaman
+      //    langsung keluar tanpa nunggu network, tidak ada layar kosong/loading lama.
+      const cached = await getReportCache();
+      if (Array.isArray(cached) && cached.length > 0) {
+        setOrders(cached);
+        hideLoadingSoftly();
+      }
+
+      // 2. Tetap ambil data terbaru dari backend di belakang layar, lalu update
+      //    tabel + cache begitu selesai (tanpa mengunci tampilan awal).
       try {
         const response = await fetch('http://idws-n26010:5000/api/purchase-orders');
         if (response.ok) {
           const data = await response.json();
           setOrders(data);
+          setReportCache(data);
           return;
         }
       } catch (e) {
         console.error('Gagal ngambil data Purchase Orders dari backend:', e);
+      } finally {
+        hideLoadingSoftly();
       }
 
-      const savedData = localStorage.getItem('dataPO_Ladeu');
-      if (savedData) {
-        try {
-          setOrders(JSON.parse(savedData));
-        } catch (e) {
-          console.error('Gagal parse data dari localStorage:', e);
+      if (!cached) {
+        const savedData = localStorage.getItem('dataPO_Ladeu');
+        if (savedData) {
+          try {
+            setOrders(JSON.parse(savedData));
+          } catch (e) {
+            console.error('Gagal parse data dari localStorage:', e);
+          }
         }
       }
     };
@@ -239,6 +318,22 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   const statusOptions = ['All Statuses', 'Waiting for Approval', 'Approved', 'Processing', 'Shipped', 'Completed', 'Cancelled', 'Pending'];
 
+  // PAGINATION: tabel hanya merender 1 halaman sekaligus, bukan seluruh filteredOrders.
+  // Tanpa ini, data ribuan/ratusan-ribu baris akan bikin browser hang saat render tabel.
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 15;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [filterStatus, filterSupplier, startDate, endDate]);
+
+  const totalPages = Math.ceil(filteredOrders.length / itemsPerPage) || 1;
+
+  const paginatedOrders = useMemo(() => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    return filteredOrders.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredOrders, currentPage]);
+
   const getStatusColor = (status) => {
     const s = String(status).toLowerCase();
     if (s.includes('completed')) {
@@ -252,7 +347,24 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      
+
+      {/* TOP LOADING BAR */}
+      {isLoadingOrders && (
+        <div className="fixed top-0 left-0 w-full h-[3px] z-[100] bg-transparent overflow-hidden">
+          <style>{`
+            @keyframes dashboardTopLoadingBar {
+              0% { left: -40%; width: 40%; opacity: 1; }
+              90% { left: 100%; width: 40%; opacity: 1; }
+              100% { left: 100%; width: 40%; opacity: 0; }
+            }
+          `}</style>
+          <div
+            className="absolute top-0 h-full bg-gradient-to-r from-red-500 via-red-600 to-red-500 shadow-[0_0_8px_rgba(220,38,38,0.6)]"
+            style={{ animation: 'dashboardTopLoadingBar 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite' }}
+          />
+        </div>
+      )}
+
       {/* HEADER SECTION */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
@@ -575,7 +687,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
                           </td>
                         </tr>
                       ) : (
-                        filteredOrders.map((order, idx) => (
+                        paginatedOrders.map((order, idx) => (
                           <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
                             <td className="py-4 px-6 font-bold text-red-500">{getPoNumber(order)}</td>
                             <td className={`py-4 px-6 text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderDate(order)}</td>
@@ -598,6 +710,42 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
                       )}
                     </tbody>
                   </table>
+                </div>
+
+                {/* PAGINATION CONTROLS */}
+                <div className={`flex items-center justify-between px-6 py-4 border-t ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                  <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    Showing <span className="font-bold text-[#004797]">{filteredOrders.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, filteredOrders.length)}</span> of total <span className="font-bold">{filteredOrders.length}</span> rows
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                      disabled={currentPage === 1}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        currentPage === 1
+                          ? 'opacity-40 cursor-not-allowed'
+                          : 'cursor-pointer'
+                      } ${isDarkMode ? 'bg-slate-800 text-slate-200 hover:bg-slate-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    >
+                      Prev
+                    </button>
+                    <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                      disabled={currentPage === totalPages || totalPages === 0}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        currentPage === totalPages || totalPages === 0
+                          ? 'opacity-40 cursor-not-allowed'
+                          : 'cursor-pointer'
+                      } ${isDarkMode ? 'bg-slate-800 text-slate-200 hover:bg-slate-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    >
+                      Next
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

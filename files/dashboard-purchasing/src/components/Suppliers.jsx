@@ -42,6 +42,7 @@ export default function Suppliers({ changePage, onLogout }) {
     }
     return [];
   });
+  const [isLoadingSuppliers, setIsLoadingSuppliers] = useState(true);
 
   // === 2. INTERACTIVITY & CLOCK STATE ===
   const [hasNotif, setHasNotif] = useState(true);
@@ -125,7 +126,14 @@ export default function Suppliers({ changePage, onLogout }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Durasi minimum garis loading tampil, supaya walau data sudah siap duluan
+  // (fetch localhost biasanya sangat cepat), animasinya tetap sempat menyapu
+  // penuh dari kiri ke kanan dulu sebelum disembunyikan — tidak cuma "kedip".
+  const MIN_LOADING_MS = 900;
+
   const fetchSuppliersFromBackend = async () => {
+    setIsLoadingSuppliers(true);
+    const loadStartedAt = Date.now();
     try {
       const res = await fetch(API_ENDPOINTS.SUPPLIERS);
       if (res.ok) {
@@ -157,6 +165,14 @@ export default function Suppliers({ changePage, onLogout }) {
       }
     } catch (err) {
       console.error("Gagal mengambil data supplier dari backend:", err);
+    } finally {
+      const elapsed = Date.now() - loadStartedAt;
+      const remaining = MIN_LOADING_MS - elapsed;
+      if (remaining > 0) {
+        setTimeout(() => setIsLoadingSuppliers(false), remaining);
+      } else {
+        setIsLoadingSuppliers(false);
+      }
     }
   };
 
@@ -520,9 +536,25 @@ export default function Suppliers({ changePage, onLogout }) {
           from { transform: translateX(100%); opacity: 0; }
           to { transform: translateX(0); opacity: 1; }
         }
+        @keyframes dashboardTopLoadingBar {
+          0% { left: -40%; width: 40%; opacity: 1; }
+          90% { left: 100%; width: 40%; opacity: 1; }
+          100% { left: 100%; width: 40%; opacity: 0; }
+        }
       `}</style>
       
       <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+
+        {/* TOP LOADING BAR */}
+        {isLoadingSuppliers && (
+          <div className="fixed top-0 left-0 w-full h-[3px] z-[100] bg-transparent overflow-hidden">
+            <div
+              className="absolute top-0 h-full bg-gradient-to-r from-red-500 via-red-600 to-red-500 shadow-[0_0_8px_rgba(220,38,38,0.6)]"
+              style={{ animation: 'dashboardTopLoadingBar 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite' }}
+            />
+          </div>
+        )}
+
         <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
           <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
             <div className="flex items-center gap-10 h-full">
