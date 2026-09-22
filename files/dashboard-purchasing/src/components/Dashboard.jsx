@@ -1,9 +1,21 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRole } from '../context/RoleContext';
 import { useTheme } from '../hooks/useTheme';
+import { API_ENDPOINTS } from '../utils/api.config';
 
 // === CONVERSION RATE ===
 const KURS_IDR_TO_USD = 15500;
+
+// Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
+// Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
+const saveOrdersCache = (rows) => {
+  try {
+    localStorage.setItem('dataPO_Ladeu', JSON.stringify(rows));
+  } catch (storageError) {
+    try { localStorage.removeItem('dataPO_Ladeu'); } catch { /* abaikan */ }
+    console.warn('Cache lokal PO tidak bisa disimpan (data terlalu besar), lanjut tanpa cache.');
+  }
+};
 
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
   // === 1. STATE MANAGEMENT ===
@@ -51,7 +63,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   useEffect(() => {
     const fetchSuppliers = async () => {
       try {
-        const response = await fetch('http://idws-n26010:5000/api/suppliers');
+        const response = await fetch(API_ENDPOINTS.SUPPLIERS);
         if (response.ok) {
           const data = await response.json();
           const map = {};
@@ -72,13 +84,35 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   // Fetch Purchase Orders
   useEffect(() => {
+    // Baris API (snake_case, kolom tabel purchase_orders) atau cache PurchaseOrders.jsx (camelCase)
+    // -> bentuk objek yang dipakai Dashboard
+    const toOrder = (po) => {
+      const rawDate = po.receipt_date || po.receiptDate || po.po_date || po.order_date || po.date;
+      return {
+        id: po.id,
+        poNumber: po.po_number || po.poNumber || po.po_no,
+        date: rawDate ? String(rawDate).split('T')[0] : '-',
+        supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
+        supplier_id: po.supplier_id,
+        totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0),
+        status: po.status || po.order_status || 'Pending',
+        // Kategori dari Product Group (mis. "RM - Plastic", "SP - Spare Parts"); 0/kosong = belum diklasifikasi
+        category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Other',
+        origin: po.local_import || po.localImport || po.origin || '',
+        notes: po.description || po.notes || '',
+        description: po.description || po.notes || '',
+        part: po.part || '',
+        items: po.items || []
+      };
+    };
+
     const loadFromLocalCache = () => {
       try {
         const cached = localStorage.getItem('dataPO_Ladeu');
         if (cached) {
           const parsed = JSON.parse(cached);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setOrders(parsed);
+            setOrders(parsed.map(toOrder));
           }
         }
       } catch (e) {
@@ -88,25 +122,14 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     const fetchOrdersFromBackend = async () => {
       try {
-        const response = await fetch('http://idws-n26010:5000/api/purchase-orders');
+        const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
-          const formattedOrders = data.map((po) => ({
-            id: po.id,
-            poNumber: po.po_number || po.po_no || po.poNumber,
-            date: (po.po_date || po.order_date) ? String(po.po_date || po.order_date).split('T')[0] : '-',
-            supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
-            supplier_id: po.supplier_id,
-            totalCost: Number(po.total_amount || po.totalCost || 0),
-            status: po.status || po.order_status || 'Pending',
-            category: po.category || 'Raw Material',
-            notes: po.description || po.notes || '',
-            items: po.items || []
-          }));
+          const formattedOrders = data.map(toOrder);
           setOrders(formattedOrders);
           
           if (formattedOrders.length > 0) {
-            localStorage.setItem('dataPO_Ladeu', JSON.stringify(formattedOrders));
+            saveOrdersCache(formattedOrders);
           }
         } else {
           loadFromLocalCache();
@@ -175,6 +198,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const getOrderDate = (order) => order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '-';
   const getOrderCategory = (order) => order.category || order.kategori || order.categoryName || 'Other';
+  // Nama item = kolom Description di halaman Purchase Orders (kalau kosong: Part)
+  const getOrderItemName = (order) => {
+    const desc = String(order.description || order.notes || '').replace(/\s+/g, ' ').trim();
+    if (desc) return desc;
+    const part = String(order.part || '').replace(/\s+/g, ' ').trim();
+    return part || 'No Description';
+  };
   const getOrderSupplier = (order) => order.supplier || order.supplierName || order.namaSupplier || '-';
   const getOrderStatus = (order) => order.status || order.statusPesanan || order.orderStatus || 'Pending';
   const getPoNumber = (order) => order.poNumber || order.noPO || order.nomorPO || '-';
@@ -292,7 +322,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               catMap[name] = (catMap[name] || 0) + cost;
             });
           } else {
-            const name = getOrderSupplier(order) !== '-' ? getOrderSupplier(order) : (order.notes || 'Other Spend');
+            const name = getOrderItemName(order);
             const cost = getOrderTotal(order);
             catMap[name] = (catMap[name] || 0) + cost;
           }
@@ -796,7 +826,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return isDarkMode ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800 font-medium' : 'bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium';
   };
 
-const pieChartData = useMemo(() => {
+  // === DATA UNTUK PIE CHART 1 (DIRECT/INDIRECT DRILL DOWN) ===
+  const pieChartData = useMemo(() => {
     const catMap = {};
     let grandTotal = 0;
 
@@ -846,10 +877,43 @@ const pieChartData = useMemo(() => {
 
     return { categories, grandTotal };
   }, [yearFilteredOrders, drillLevel, selectedGroup]);
-const renderDrilldownPieChart = () => {
-    const { categories, grandTotal } = pieChartData;
 
-    if (!categories || categories.length === 0 || grandTotal === 0) {
+  // === DATA UNTUK PIE CHART 2 (IMPORT VS LOCAL) ===
+  const originPieChartData = useMemo(() => {
+    const originMap = { 'Local': 0, 'Import': 0 };
+    let grandTotal = 0;
+
+    yearFilteredOrders.forEach((order) => {
+      const cost = getOrderTotal(order);
+      const origin = getOrderOrigin(order);
+      if (origin.toLowerCase().includes('import') || origin.toLowerCase().includes('impor')) {
+        originMap['Import'] += cost;
+      } else {
+        originMap['Local'] += cost;
+      }
+      grandTotal += cost;
+    });
+
+    const categories = Object.keys(originMap)
+      .filter(key => originMap[key] > 0)
+      .map((originName) => {
+        const cost = originMap[originName];
+        const percentage = grandTotal > 0 ? ((cost / grandTotal) * 100).toFixed(1) : 0;
+        return {
+          name: originName,
+          value: cost,
+          percentage: parseFloat(percentage),
+          color: originName === 'Import' ? '#A855F7' : '#10B981' // Purple for Import, Emerald for Local
+        };
+      });
+
+    return { categories, grandTotal };
+  }, [yearFilteredOrders]);
+
+
+  // === FUNGSI HELPER UNTUK MENGGAMBAR SVG PIE CHART (Bisa dipakai ulang) ===
+  const renderGenericPieChart = (data, totalValue, onSliceClick = null, isClickable = false) => {
+    if (!data || data.length === 0 || totalValue === 0) {
       return (
         <div className="h-72 flex items-center justify-center text-gray-400 text-sm relative">
           No data available in this category for the selected year.
@@ -864,8 +928,8 @@ const renderDrilldownPieChart = () => {
     const cy = 125;
     const maxLabels = 8;
     
-    const slices = categories.map((cat, index) => {
-      const sliceAngle = (cat.value / grandTotal) * 360;
+    const slices = data.map((cat, index) => {
+      const sliceAngle = (cat.value / totalValue) * 360;
       const startAngle = cumulativeAngle;
       const endAngle = cumulativeAngle + sliceAngle;
       const middleAngle = startAngle + sliceAngle / 2;
@@ -912,49 +976,21 @@ const renderDrilldownPieChart = () => {
       };
     });
 
-    // KLIK HANYA BERAKSI PADA LEVEL 0 (MAIN -> DIRECT/INDIRECT)
-    const handleSliceClick = (sliceName) => {
-      if (drillLevel === 0) {
-        setSelectedGroup(sliceName);
-        setDrillLevel(1);
-      }
-    };
-
     return (
-      <div className="w-full flex flex-col items-center">
-        {/* NAVIGASI BREADCRUMB (MAX LEVEL 1) */}
-        <div className={`flex items-center gap-2 mb-2 mt-2 text-xs font-semibold p-2 rounded-lg border self-start ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
-          <button 
-            onClick={() => { setDrillLevel(0); setSelectedGroup(null); }}
-            className={`hover:text-red-500 transition-colors cursor-pointer ${drillLevel === 0 ? 'text-red-500 font-bold' : isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}
-          >
-            <i className="fa-solid fa-house mr-1"></i> Main
-          </button>
-          
-          {drillLevel === 1 && (
-            <>
-              <span className={isDarkMode ? 'text-slate-600' : 'text-gray-300'}>/</span>
-              <span className="text-red-500 font-bold">{selectedGroup}</span>
-            </>
-          )}
-        </div>
-        
-        <div className="w-full h-72 relative mt-2">
+      <div className="w-full flex flex-col items-center mt-2">
+        <div className="w-full h-72 relative">
           <svg viewBox="0 0 440 250" className="w-full h-full overflow-visible">
-            {slices.map((slice, i) => {
-              const isClickable = drillLevel === 0;
-              return (
-                <path
-                  key={i}
-                  d={slice.pathData}
-                  fill={slice.color}
-                  stroke={isDarkMode ? '#1E293B' : '#FFFFFF'}
-                  strokeWidth="2.5"
-                  className={`transition-all duration-200 ${isClickable ? 'cursor-pointer hover:opacity-85 hover:-translate-y-1' : ''}`}
-                  onClick={() => handleSliceClick(slice.name)}
-                />
-              );
-            })}
+            {slices.map((slice, i) => (
+              <path
+                key={i}
+                d={slice.pathData}
+                fill={slice.color}
+                stroke={isDarkMode ? '#1E293B' : '#FFFFFF'}
+                strokeWidth="2.5"
+                className={`transition-all duration-200 ${isClickable ? 'cursor-pointer hover:opacity-85 hover:-translate-y-1' : ''}`}
+                onClick={() => isClickable && onSliceClick && onSliceClick(slice.name)}
+              />
+            ))}
 
             {slices.map((slice, i) => (
               slice.showLabel && (
@@ -982,7 +1018,7 @@ const renderDrilldownPieChart = () => {
 
         <div className={`w-full mt-4 pt-4 border-t max-h-[350px] overflow-y-auto scrollbar-thin ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
           <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs mb-2">
-            {categories.map((cat, i) => (
+            {data.map((cat, i) => (
               <div key={i} className="flex items-center gap-2 max-w-[180px]" title={`${cat.name}: ${formatUSD(cat.value)}`}>
                 <span className="w-3 h-3 rounded-full shrink-0 shadow-xs" style={{ backgroundColor: cat.color }}></span>
                 <span className={`font-semibold truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>{cat.name}</span>
@@ -993,6 +1029,47 @@ const renderDrilldownPieChart = () => {
       </div>
     );
   };
+
+
+  const renderDrilldownPieChart = () => {
+    const { categories, grandTotal } = pieChartData;
+
+    const handleSliceClick = (sliceName) => {
+      if (drillLevel === 0) {
+        setSelectedGroup(sliceName);
+        setDrillLevel(1);
+      }
+    };
+
+    return (
+      <div className="w-full flex flex-col">
+        {/* NAVIGASI BREADCRUMB (MAX LEVEL 1) */}
+        <div className={`flex items-center gap-2 mb-2 mt-2 text-xs font-semibold p-2 rounded-lg border self-start ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
+          <button 
+            onClick={() => { setDrillLevel(0); setSelectedGroup(null); }}
+            className={`hover:text-red-500 transition-colors cursor-pointer ${drillLevel === 0 ? 'text-red-500 font-bold' : isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}
+          >
+            <i className="fa-solid fa-house mr-1"></i> Main
+          </button>
+          
+          {drillLevel === 1 && (
+            <>
+              <span className={isDarkMode ? 'text-slate-600' : 'text-gray-300'}>/</span>
+              <span className="text-red-500 font-bold">{selectedGroup}</span>
+            </>
+          )}
+        </div>
+        
+        {renderGenericPieChart(categories, grandTotal, handleSliceClick, drillLevel === 0)}
+      </div>
+    );
+  };
+
+  const renderOriginPieChart = () => {
+    const { categories, grandTotal } = originPieChartData;
+    return renderGenericPieChart(categories, grandTotal, null, false);
+  };
+
   const renderCategoryBarChart = () => {
     const { categories: top10Categories, maxVal } = barChartData; 
     const barColors = ['#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#FECACA', '#FCA5A5', '#F87171', '#EF4444', '#DC2626', '#B91C1C'];
@@ -1049,7 +1126,6 @@ const renderDrilldownPieChart = () => {
       </div>
     );
   };
-
   const renderSupplierParetoChart = () => {
     const { items } = paretoSupplierData;
 
@@ -1362,6 +1438,7 @@ const renderDrilldownPieChart = () => {
                           transform={`rotate(-35, ${cx}, ${padTop + chartH + 16})`}
                           className={`text-[10px] font-semibold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-700'}`}
                         >
+                          <title>{item.name}</title>
                           {item.name.length > 14 ? item.name.substring(0, 12) + '...' : item.name}
                         </text>
                       </g>
@@ -1409,7 +1486,7 @@ const renderDrilldownPieChart = () => {
                 <table className="w-full text-left text-xs">
                   <thead>
                     <tr className={`border-b text-[11px] font-bold ${isDarkMode ? 'border-slate-800 text-slate-400 bg-slate-900/50' : 'border-gray-200 text-gray-600 bg-white'}`}>
-                      <th className="py-2.5 px-3">ITEM / SUPPLIER</th>
+                      <th className="py-2.5 px-3">DESCRIPTION</th>
                       <th className="py-2.5 px-2 text-right">SPEND</th>
                       <th className="py-2.5 px-2 text-right">CUMULATIVE (%)</th>
                     </tr>
@@ -1417,7 +1494,7 @@ const renderDrilldownPieChart = () => {
                   <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/60 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
                     {items.map((item, idx) => (
                       <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
-                        <td className="py-2 px-3 font-semibold truncate max-w-[120px]" title={item.name}>
+                        <td className="py-2 px-3 font-semibold truncate max-w-[260px]" title={item.name}>
                           {item.name}
                         </td>
                         <td className="py-2 px-2 text-right font-medium">
@@ -1448,6 +1525,7 @@ const renderDrilldownPieChart = () => {
   useEffect(() => {
     localStorage.setItem('sidebarDashboardOpen', isDashboardMenuOpen);
   }, [isDashboardMenuOpen]);
+
   const dashboardTabs = [
     { id: 'overview', label: 'Overview', icon: 'fa-gauge-high' },
     { id: 'category', label: 'Category', icon: 'fa-chart-pie' },
@@ -1536,7 +1614,6 @@ const renderDrilldownPieChart = () => {
       <div className="flex flex-1 overflow-hidden">
         
         {/* SIDEBAR */}
-{/* SIDEBAR */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
           isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
         }`}>
@@ -1606,7 +1683,8 @@ const renderDrilldownPieChart = () => {
 
             {canManageUsers && (
               <button
-onClick={() => changePage && changePage('userManagement')}                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
+                onClick={() => changePage && changePage('userManagement')}
+                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
                   activePage === 'userManagement' 
                     ? 'bg-[#E31837] text-white font-bold' 
                     : isDarkMode
@@ -1619,6 +1697,7 @@ onClick={() => changePage && changePage('userManagement')}                classN
             )}
           </nav>
         </aside>
+
         {/* MAIN CONTENT */}
         <main className="flex-1 overflow-y-auto p-8 space-y-6">
           <div>
@@ -1728,17 +1807,34 @@ onClick={() => changePage && changePage('userManagement')}                classN
             </>
           )}
 
-{activeTab === 'category' && (
+          {activeTab === 'category' && (
             <div className="flex flex-col gap-6">
-              <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <div className="w-full text-left mb-2">
-                  <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Category</h3>
-                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    {drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to view sub-categories.' : `Category breakdown for ${selectedGroup}.`}
-                  </p>
+              {/* GRID UNTUK 2 PIE CHART (CATEGORY DRILLDOWN & ORIGIN IMPORT/LOCAL) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* PIE CHART 1: CATEGORY DRILLDOWN */}
+                <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-full text-left mb-2">
+                    <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Category</h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                      {drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to view sub-categories.' : `Category breakdown for ${selectedGroup}.`}
+                    </p>
+                  </div>
+                  {renderDrilldownPieChart()}
                 </div>
-                {renderDrilldownPieChart()}
+
+                {/* PIE CHART 2: IMPORT VS LOCAL */}
+                <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <div className="w-full text-left mb-2">
+                    <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Origin</h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                      Comparison between Import and Local spend.
+                    </p>
+                  </div>
+                  {renderOriginPieChart()}
+                </div>
               </div>
+
+              {/* BAR CHART / PARETO CATEGORY */}
               <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                   <div>

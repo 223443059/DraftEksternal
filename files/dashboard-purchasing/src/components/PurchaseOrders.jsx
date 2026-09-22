@@ -9,8 +9,233 @@ const usdFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2 
 });
 
-const KURS_IDR_TO_USD = 15500;
+// Exchange Rate IDR per 1 USD based on transaction year
+const KURS_PER_TAHUN = {
+  2023: 15331,
+  2024: 15926,
+  2025: 16557,
+  2026: 17505
+};
 
+const getKurs = (year) => {
+  const years = Object.keys(KURS_PER_TAHUN).map(Number);
+  const y = parseInt(year, 10);
+  if (Number.isNaN(y)) return KURS_PER_TAHUN[Math.max(...years)];
+  const nearest = Math.min(Math.max(y, Math.min(...years)), Math.max(...years));
+  return KURS_PER_TAHUN[nearest];
+};
+
+const idrFormatter = new Intl.NumberFormat('id-ID', {
+  style: 'currency',
+  currency: 'IDR',
+  minimumFractionDigits: 0
+});
+
+const moneyFormatter = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
+
+const qtyFormatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
+
+const MONTH_OPTIONS = [
+  { value: 'All', label: 'All Months' },
+  { value: '01', label: 'January' },
+  { value: '02', label: 'February' },
+  { value: '03', label: 'March' },
+  { value: '04', label: 'April' },
+  { value: '05', label: 'May' },
+  { value: '06', label: 'June' },
+  { value: '07', label: 'July' },
+  { value: '08', label: 'August' },
+  { value: '09', label: 'September' },
+  { value: '10', label: 'October' },
+  { value: '11', label: 'November' },
+  { value: '12', label: 'December' }
+];
+
+// ---------------------------------------------------------------------------
+// INDEXEDDB HELPER (CAPABLE OF STORING DATA > 5 MB EASILY)
+// ---------------------------------------------------------------------------
+const IDB_NAME = 'DetpakPO_DB';
+const IDB_STORE = 'po_cache';
+
+const initIDB = () => new Promise((resolve, reject) => {
+  const request = indexedDB.open(IDB_NAME, 1);
+  request.onupgradeneeded = (e) => {
+    const db = e.target.result;
+    if (!db.objectStoreNames.contains(IDB_STORE)) {
+      db.createObjectStore(IDB_STORE);
+    }
+  };
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+
+const setPOCache = async (rows) => {
+  try {
+    const db = await initIDB();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(rows, 'dataPO_Ladeu');
+  } catch (err) {
+    console.warn('Failed to save cache to IndexedDB:', err);
+  }
+};
+
+const getPOCache = async () => {
+  try {
+    const db = await initIDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get('dataPO_Ladeu');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (err) {
+    return null;
+  }
+};
+
+const toNumber = (v) => {
+  if (v === null || v === undefined || v === '') return 0;
+  if (typeof v === 'number') return Number.isNaN(v) ? 0 : v;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  return Number.isNaN(n) ? 0 : n;
+};
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+const cleanCode = (v) => {
+  const s = String(v ?? '').trim();
+  return s === '0' ? '' : s;
+};
+
+const toIntOrNull = (v) => {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = parseInt(v, 10);
+  return Number.isNaN(n) ? null : n;
+};
+
+const computeSpending = (amount, currency, year) => {
+  const value = toNumber(amount);
+  const kurs = getKurs(year);
+  const isUSD = String(currency || '').toUpperCase() === 'USD';
+  return isUSD
+    ? { idr: round2(value * kurs), usd: round2(value) }
+    : { idr: round2(value), usd: round2(value / kurs) };
+};
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+const parseExcelDate = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') {
+    const d = new Date(Math.floor(value - 25569) * 86400 * 1000);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString().split('T')[0];
+  }
+  const text = String(value).trim();
+  const dmy = text.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (dmy) return `${dmy[3]}-${pad2(dmy[2])}-${pad2(dmy[1])}`;
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().split('T')[0];
+};
+
+const pickField = (obj, ...keys) => {
+  for (const k of keys) {
+    if (obj[k] !== undefined && obj[k] !== null) return obj[k];
+  }
+  return undefined;
+};
+
+const normalizeRow = (r = {}) => {
+  const rawDate = pickField(r, 'receipt_date', 'receiptDate');
+  return {
+    id: r.id,
+    mainClass: pickField(r, 'main_class', 'mainClass') ?? '',
+    classCode: pickField(r, 'class_code', 'classCode') ?? '',
+    productGroup: pickField(r, 'product_group', 'productGroup') ?? '',
+    subCategory: pickField(r, 'sub_category', 'subCategory') ?? '',
+    type: pickField(r, 'type') ?? '',
+    packSlip: pickField(r, 'pack_slip', 'packSlip') ?? '',
+    receiptDate: rawDate ? String(rawDate).split('T')[0] : '',
+    poNumber: pickField(r, 'po_number', 'poNumber') ?? '',
+    poLine: pickField(r, 'po_line', 'poLine') ?? '',
+    poRel: pickField(r, 'po_rel', 'poRel') ?? '',
+    part: pickField(r, 'part') ?? '',
+    description: pickField(r, 'description') ?? '',
+    qtyReceived: toNumber(pickField(r, 'qty_received', 'qtyReceived')),
+    uom: pickField(r, 'uom') ?? '',
+    price: toNumber(pickField(r, 'price')),
+    amount: toNumber(pickField(r, 'amount')),
+    year: pickField(r, 'year') ?? '',
+    spendingIdr: toNumber(pickField(r, 'spending_idr', 'spendingIdr')),
+    spendingUsd: toNumber(pickField(r, 'spending_usd', 'spendingUsd')),
+    currency: String(pickField(r, 'currency') ?? '').toUpperCase(),
+    supplier: pickField(r, 'supplier') ?? '',
+    localImport: pickField(r, 'local_import', 'localImport') ?? ''
+  };
+};
+
+const rowKey = (r) => `${r.poNumber}|${r.poLine}|${r.packSlip}`.toLowerCase();
+
+const textOrNull = (v, max) => {
+  if (v === '' || v === undefined || v === null) return null;
+  const s = String(v).trim();
+  if (s === '') return null;
+  return max ? s.slice(0, max) : s;
+};
+
+const buildPayload = (row) => ({
+  main_class: textOrNull(row.mainClass, 20),
+  class_code: textOrNull(row.classCode, 20),
+  product_group: textOrNull(row.productGroup, 100),
+  sub_category: textOrNull(row.subCategory, 100),
+  type: textOrNull(row.type, 20),
+  pack_slip: textOrNull(row.packSlip, 50),
+  receipt_date: textOrNull(row.receiptDate),
+  po_number: String(row.poNumber).trim().slice(0, 50),
+  po_line: toIntOrNull(row.poLine),
+  po_rel: textOrNull(row.poRel, 20),
+  part: textOrNull(row.part, 100),
+  description: textOrNull(row.description, 255),
+  qty_received: toNumber(row.qtyReceived),
+  uom: textOrNull(row.uom, 20),
+  price: toNumber(row.price),
+  amount: toNumber(row.amount),
+  year: toIntOrNull(row.year),
+  spending_idr: toNumber(row.spendingIdr),
+  spending_usd: toNumber(row.spendingUsd),
+  currency: textOrNull(row.currency, 10),
+  supplier: textOrNull(row.supplier, 150),
+  local_import: textOrNull(row.localImport, 20)
+});
+
+const getEmptyForm = () => ({
+  mainClass: '',
+  classCode: '',
+  productGroup: '',
+  subCategory: '',
+  type: '',
+  packSlip: '',
+  receiptDate: new Date().toISOString().split('T')[0],
+  poNumber: '',
+  poLine: '',
+  poRel: '',
+  part: '',
+  description: '',
+  qtyReceived: 1,
+  uom: 'EA',
+  price: 0,
+  amount: 0,
+  year: String(new Date().getFullYear()),
+  spendingIdr: 0,
+  spendingUsd: 0,
+  currency: 'IDR',
+  supplier: '',
+  localImport: 'Local'
+});
 export default function PurchaseOrders({ 
   changePage, 
   onLogout, 
@@ -27,17 +252,23 @@ export default function PurchaseOrders({
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [showProfileCard, setShowProfileCard] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [priorityFilter, setPriorityFilter] = useState('ALL');
+  
+  // State Filter Year & Month
+  const [selectedYear, setSelectedYear] = useState('All');
+  const [selectedMonth, setSelectedMonth] = useState('All');
+
   const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [isHeaderOpen, setIsHeaderOpen] = useState(true);
-  const [isLinesOpen, setIsLinesOpen] = useState(true);
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const [printOrder, setPrintOrder] = useState(null);
   const [formattedTime, setFormattedTime] = useState('');
   
-  // State Paginasi (15 baris per halaman)
+  // State Upload Progress & Loading
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  // Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
@@ -46,43 +277,7 @@ export default function PurchaseOrders({
 
   const profileRef = useRef(null);
   const supplierDropdownRef = useRef(null);
-
-  const initialFormData = {
-    poNo: '',
-    poNumber: '',
-    supplierId: '',
-    date: new Date().toISOString().split('T')[0],
-    dueDate: '',
-    promiseDate: '',
-    type: 'Standard',
-    buyer: 'Local Purchasing - MTS',
-    currency: 'USD',
-    exchangeRate: '15500',
-    terms: '30 Days Net',
-    shipVia: 'Land Trucking',
-    prepaidFreight: false,
-    fob: '',
-    supplier: '',
-    purchasePoint: 'Lokal',
-    address: '',
-    attn: 'None Selected',
-    phone: '',
-    fax: '',
-    enteredBy: user?.username || 'Admin',
-    supplierOrderNumber: '',
-    category: 'Raw Material',
-    description: '',
-    notes: '',
-    isApproved: false,
-    status: 'Unsubmitted',
-    priority: 'NORMAL',
-    charges: 0,
-    misc: 0,
-    tax: 0,
-    items: [{ id: Date.now(), partNum: '', name: '', dueDate: '', qty: 1, uom: 'EA', price: 0 }]
-  };
-
-  const [formData, setFormData] = useState(initialFormData);
+  const [formData, setFormData] = useState(getEmptyForm);
 
   // === 2. EFFECTS & LISTENERS ===
   useEffect(() => {
@@ -119,59 +314,63 @@ export default function PurchaseOrders({
     }
   }, [printOrder]);
 
-  // Reset halaman ke 1 saat pencarian atau filter berubah
+  // Reset pagination to page 1 whenever filters change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, priorityFilter]);
+  }, [searchTerm, selectedYear, selectedMonth]);
 
   const showToast = (message, type = 'success') => {
     setToast({ show: true, message, type });
-    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+    if (type !== 'info') {
+      setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3500);
+    }
   };
 
   // === 3. BACKEND API CALLS ===
   const fetchOrdersFromBackend = async () => {
     try {
-      // ✅ FIX: Ganti '/api/purchase-orders' dengan API_ENDPOINTS.PURCHASE_ORDERS
       const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
       if (response.ok) {
         const data = await response.json();
-        const formattedOrders = data.map(po => ({
-          id: po.id,
-          poNumber: po.po_number || po.po_no || po.poNumber,
-          date: po.po_date ? po.po_date.split('T')[0] : new Date().toISOString().split('T')[0],
-          supplier: po.supplier_name || po.supplier || '',
-          supplier_id: po.supplier_id,
-          totalCost: Number(po.total_amount || po.totalCost || 0),
-          status: po.status || po.order_status || 'Unsubmitted',
-          category: po.category || 'Raw Material',
-          notes: po.description || po.notes || '',
-          items: po.items || []
-        }));
-        setLocalOrders(formattedOrders);
-        localStorage.setItem('dataPO_Ladeu', JSON.stringify(formattedOrders));
+        const rows = data.map((row) => normalizeRow(row));
+        setLocalOrders(rows);
+        await setPOCache(rows);
+      } else {
+        loadFromIndexedDBCache();
       }
     } catch (error) {
-      console.error('Gagal mengambil data PO dari database:', error);
+      console.error('Failed to fetch PO data from database:', error);
+      loadFromIndexedDBCache();
+    }
+  };
+
+  const loadFromIndexedDBCache = async () => {
+    const cached = await getPOCache();
+    if (Array.isArray(cached) && cached.length > 0) {
+      setLocalOrders(cached);
     }
   };
 
   const fetchSuppliersFromBackend = async () => {
     try {
-      // ✅ FIX: Ganti '/api/suppliers' dengan API_ENDPOINTS.SUPPLIERS
       const response = await fetch(API_ENDPOINTS.SUPPLIERS);
       if (response.ok) {
         const data = await response.json();
         setDbSuppliers(data);
       }
     } catch (error) {
-      console.error('Gagal mengambil data Supplier dari database:', error);
+      console.error('Failed to fetch Supplier data from database:', error);
     }
   };
 
-  // === 4. DATA COMPUTATIONS & PAGINASI ===
+  // === 4. DATA COMPUTATIONS & FILTERING ===
   const orders = useMemo(() => {
-    return Array.isArray(propOrders) && propOrders.length > 0 ? propOrders : localOrders;
+    if (localOrders && localOrders.length > 0) {
+      return localOrders;
+    }
+    return Array.isArray(propOrders) && propOrders.length > 0
+      ? propOrders.map((row) => normalizeRow(row))
+      : [];
   }, [propOrders, localOrders]);
 
   const setOrders = propSetOrders || setLocalOrders;
@@ -182,232 +381,75 @@ export default function PurchaseOrders({
     return [];
   }, [dbSuppliers, propSuppliers]);
 
-  const daftarSupplier = useMemo(() => {
-    if (daftarSupplierObjects.length === 0) {
-      return ["CV Bintang", "CV Melaju Bersama", "PT AE", "PT Rajendra Abadi", "PT Elektronik Maju"];
-    }
-    return daftarSupplierObjects
-      .map(s => typeof s === 'string' ? s : (s.name || s.nama || s.perusahaan || s.supplier))
-      .filter(Boolean);
-  }, [daftarSupplierObjects]);
-
-  const formatUSDWithExchange = (amount, currency = 'IDR') => {
-    const curr = String(currency).toUpperCase();
-    if (curr === 'USD') {
-      return usdFormatter.format(amount || 0);
-    }
-    const amountInUSD = (amount || 0) / KURS_IDR_TO_USD;
-    return usdFormatter.format(amountInUSD);
-  };
-
-  const calculateGrandTotal = (po) => {
-    if (!po) return 0;
-    if (po.totalCost && Number(po.totalCost) > 0) return Number(po.totalCost);
-    if (po.total_amount && Number(po.total_amount) > 0) return Number(po.total_amount);
-    
-    const itemsTotal = Array.isArray(po.items)
-      ? po.items.reduce((sum, item) => sum + (Number(item.qty || item.quantity || 1) * Number(item.price || item.harga || 0)), 0)
-      : 0;
-
-    return itemsTotal + Number(po.charges || 0) + Number(po.misc || 0) + Number(po.tax || 0);
-  };
-
-  const formGrandTotal = useMemo(() => {
-    const itemsTotal = formData.items.reduce((sum, item) => {
-      return sum + ((Number(item.qty) || 0) * (Number(item.price) || 0));
-    }, 0);
-    return itemsTotal + (Number(formData.charges) || 0) + (Number(formData.misc) || 0) + (Number(formData.tax) || 0);
-  }, [formData.items, formData.charges, formData.misc, formData.tax]);
-
-  const totalAmount = formGrandTotal;
-
-  const stats = useMemo(() => {
-    const totalPO = orders.length;
-    let waitingPaymentTotal = 0;
-    let completedCount = 0;
-
-    orders.forEach(order => {
-      const status = (order.status || '').toUpperCase();
-      const totalVal = calculateGrandTotal(order);
-
-      if (status === 'COMPLETED' || status === 'SELESAI') {
-        completedCount += 1;
-      } else {
-        waitingPaymentTotal += totalVal;
-      }
+  // Extract unique available years dynamically from data
+  const availableYears = useMemo(() => {
+    const yearsSet = new Set();
+    orders.forEach((r) => {
+      const y = String(r.year || (r.receiptDate ? r.receiptDate.slice(0, 4) : '')).trim();
+      if (y && y !== '0') yearsSet.add(y);
     });
-
-    return { totalPO, waitingPaymentTotal, completedCount };
+    const list = Array.from(yearsSet).sort((a, b) => b.localeCompare(a));
+    return list.length > 0 ? list : ['2026', '2025', '2024', '2023'];
   }, [orders]);
 
-  const filteredOrders = useMemo(() => {
-    return orders.filter(order => {
-      const term = searchTerm.toLowerCase();
-      const poNum = (order?.poNumber || '').toLowerCase();
-      const supp = (order?.supplier || order?.namaSupplier || '').toLowerCase();
-      const matchesSearch = poNum.includes(term) || supp.includes(term);
-      
-      const pVal = (order?.priority || order?.prioritas || 'Normal').toUpperCase();
-      const matchesPriority = priorityFilter === 'ALL' ? true : priorityFilter === 'URGENT' ? pVal === 'URGENT' : pVal === 'NORMAL';
-      return matchesSearch && matchesPriority;
-    });
-  }, [orders, searchTerm, priorityFilter]);
+  // Combined Filtering: Year, Month, & Search Term
+  const filteredRows = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
 
-  // Meratakan seluruh baris item PO untuk pemotongan 15 baris per halaman
-  const allFlattenedRows = useMemo(() => {
-    return filteredOrders.flatMap((order) => {
-      const items = Array.isArray(order.items) && order.items.length > 0 ? order.items : [{}];
-      return items.map((item, index) => ({
-        order,
-        item,
-        itemIndex: index,
-        rowId: `${order.id}-${index}`
-      }));
-    });
-  }, [filteredOrders]);
+    return orders.filter((row) => {
+      // 1. Filter Year
+      const rowYear = String(row.year || (row.receiptDate ? row.receiptDate.slice(0, 4) : '')).trim();
+      if (selectedYear !== 'All' && rowYear !== selectedYear) {
+        return false;
+      }
 
-  const totalPages = Math.ceil(allFlattenedRows.length / itemsPerPage) || 1;
+      // 2. Filter Month (Format: "MM")
+      const rowMonth = row.receiptDate ? row.receiptDate.slice(5, 7) : '';
+      if (selectedMonth !== 'All' && rowMonth !== selectedMonth) {
+        return false;
+      }
+
+      // 3. Filter Search Term
+      if (term) {
+        const match = [
+          row.poNumber,
+          row.supplier,
+          row.part,
+          row.description,
+          row.packSlip,
+          row.productGroup,
+          row.subCategory
+        ].some((v) => String(v || '').toLowerCase().includes(term));
+        if (!match) return false;
+      }
+
+      return true;
+    });
+  }, [orders, searchTerm, selectedYear, selectedMonth]);
+
+  // Summary stats based on active filtered data
+  const stats = useMemo(() => {
+    const poNumbers = new Set();
+    let totalUSD = 0;
+    let totalIDR = 0;
+
+    filteredRows.forEach((row) => {
+      if (row.poNumber) poNumbers.add(row.poNumber);
+      totalUSD += row.spendingUsd;
+      totalIDR += row.spendingIdr;
+    });
+
+    return { totalPO: poNumbers.size, totalLines: filteredRows.length, totalUSD, totalIDR };
+  }, [filteredRows]);
+
+  const totalPages = Math.ceil(filteredRows.length / itemsPerPage) || 1;
 
   const currentPaginatedRows = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
-    return allFlattenedRows.slice(startIndex, startIndex + itemsPerPage);
-  }, [allFlattenedRows, currentPage, itemsPerPage]);
+    return filteredRows.slice(startIndex, startIndex + itemsPerPage);
+  }, [filteredRows, currentPage, itemsPerPage]);
 
-  // === 5. ACTION HANDLERS ===
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    try {
-      const matchedSupplier = daftarSupplierObjects.find(
-        s => (typeof s === 'string' ? s : (s.name || s.nama || s.perusahaan)) === formData.supplier
-      );
-      const supplierId = formData.supplierId || (matchedSupplier ? matchedSupplier.id : 1);
-
-      // ✅ FIX: Ganti URL string dengan API_ENDPOINTS.PURCHASE_ORDERS
-      const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          po_no: formData.poNo || formData.poNumber,
-          supplier_id: supplierId,
-          category: formData.category,
-          description: formData.description || formData.notes,
-          total_amount: totalAmount,
-          order_status: 'Pending',
-          order_date: new Date()
-        })
-      });
-
-      const result = await response.json();
-      if (result.success || response.ok) {
-        showToast('PO Berhasil Disimpan!', 'success');
-        fetchOrdersFromBackend(); 
-        setIsModalOpen(false);
-      }
-    } catch (error) {
-      console.error('Gagal kirim PO:', error);
-      showToast('Gagal menyimpan PO', 'error');
-    }
-  };
-
-  const deletePO = async (id, poNumber) => {
-    if (window.confirm(`Hapus dokumen ${poNumber || 'PO'} dari database?`)) {
-      try {
-        // ✅ FIX: Gunakan API_ENDPOINTS untuk Delete
-        const response = await fetch(`${API_ENDPOINTS.PURCHASE_ORDERS}/${id}`, { method: 'DELETE' });
-        if (response.ok) {
-          showToast(`PO ${poNumber} berhasil dihapus.`, 'success');
-          fetchOrdersFromBackend();
-        } else {
-          const updated = orders.filter(o => o.id !== id);
-          setOrders(updated);
-          localStorage.setItem('dataPO_Ladeu', JSON.stringify(updated));
-          showToast(`PO ${poNumber} dihapus dari lokal.`, 'success');
-        }
-      } catch (error) {
-        console.error('Error saat menghapus PO:', error);
-        const updated = orders.filter(o => o.id !== id);
-        setOrders(updated);
-        localStorage.setItem('dataPO_Ladeu', JSON.stringify(updated));
-        showToast(`PO ${poNumber} dihapus dari lokal.`, 'success');
-      }
-    }
-  };
-
-  const handleEditClick = (order) => {
-    setEditingId(order.id);
-    const poCode = order.poNumber ? order.poNumber.replace(/^PO-/, '') : '';
-    setFormData({
-      poNo: poCode,
-      poNumber: poCode,
-      supplierId: order.supplier_id || '',
-      date: order.date || new Date().toISOString().split('T')[0],
-      dueDate: order.dueDate || '',
-      promiseDate: order.promiseDate || '',
-      type: order.type || 'Standard',
-      buyer: order.buyer || 'Local Purchasing - MTS',
-      currency: order.currency || 'USD',
-      exchangeRate: order.exchangeRate || '15500',
-      terms: order.terms || '30 Days Net',
-      shipVia: order.shipVia || 'Land Trucking',
-      prepaidFreight: Boolean(order.prepaidFreight),
-      fob: order.fob || '',
-      supplier: order.supplier || order.namaSupplier || '',
-      purchasePoint: order.purchasePoint || 'Lokal',
-      address: order.address || '',
-      attn: order.attn || 'None Selected',
-      phone: order.phone || '',
-      fax: order.fax || '',
-      enteredBy: order.enteredBy || user?.username || 'Admin',
-      supplierOrderNumber: order.supplierOrderNumber || '',
-      category: order.category || 'Raw Material',
-      description: order.notes || order.description || '',
-      notes: order.notes || order.description || '',
-      isApproved: order.status === 'Ready To Process',
-      status: order.status || 'Unsubmitted',
-      priority: order.priority || 'NORMAL',
-      charges: order.charges || 0,
-      misc: order.misc || 0,
-      tax: order.tax || 0,
-      items: Array.isArray(order.items) && order.items.length > 0 
-        ? order.items.map((it, idx) => ({
-            id: it.id || idx,
-            partNum: it.partNum || '',
-            name: it.name || it.deskripsi || '',
-            dueDate: it.dueDate || '',
-            qty: it.qty || it.quantity || 1,
-            uom: it.uom || 'EA',
-            price: it.price || it.harga || 0
-          }))
-        : [{ id: Date.now(), partNum: '', name: order.notes || 'Default Item', dueDate: '', qty: 1, uom: 'EA', price: order.totalCost || 0 }]
-    });
-    setIsModalOpen(true);
-  };
-
-  const mapStatusToEnum = (rawStatus) => {
-    const s = String(rawStatus || '').trim().toLowerCase();
-    if (s === 'completed' || s === 'complete' || s === 'done') return 'Completed';
-    if (s === 'awaiting payment' || s === 'awaiting_payment' || s === 'unpaid') return 'Awaiting Payment';
-    return 'Pending';
-  };
-
-  const excelSerialToISODate = (value) => {
-    if (value === null || value === undefined || value === '') {
-      return new Date().toISOString().split('T')[0];
-    }
-    if (typeof value === 'number') {
-      const utcDays = Math.floor(value - 25569);
-      const utcMs = utcDays * 86400 * 1000;
-      const dateObj = new Date(utcMs);
-      return dateObj.toISOString().split('T')[0];
-    }
-    const parsed = new Date(value);
-    if (!isNaN(parsed.getTime())) {
-      return parsed.toISOString().split('T')[0];
-    }
-    return new Date().toISOString().split('T')[0];
-  };
-
+  // === 5. EXCEL UPLOAD HANDLING ===
   const getCol = (row, ...possibleNames) => {
     const keys = Object.keys(row);
     for (const name of possibleNames) {
@@ -423,193 +465,310 @@ export default function PurchaseOrders({
     const file = e.target.files[0];
     if (!file) return;
 
+    setIsUploading(true);
+    setUploadProgress(0);
+    showToast(`Reading Excel file (${(file.size / (1024 * 1024)).toFixed(2)} MB)...`, 'info');
+
     const reader = new FileReader();
     reader.onload = async (evt) => {
       try {
-        const bstr = evt.target.result;
-        const workbook = XLSX.read(bstr, { type: 'binary' });
-        const wsName = workbook.SheetNames[0];
-        const ws = workbook.Sheets[wsName];
+        const workbook = XLSX.read(evt.target.result, { type: 'array' });
+        const ws = workbook.Sheets[workbook.SheetNames[0]];
         const rawData = XLSX.utils.sheet_to_json(ws);
 
         if (rawData.length === 0) {
-          showToast('File Excel kosong atau formatnya tidak terbaca!', 'error');
+          showToast('Excel file is empty or format is unreadable!', 'error');
+          setIsUploading(false);
           e.target.value = null;
           return;
         }
 
-        const poGroups = new Map();
+        const existingKeys = new Set(orders.map((o) => rowKey(o)));
+        const validRows = [];
+        let duplicateCount = 0;
+        let skippedCount = 0;
 
-        rawData.forEach((row, index) => {
-          const rawPoNo = getCol(row, 'PO Number', 'poNumber') ?? getCol(row, 'PO');
-          const poNo = rawPoNo !== undefined
-            ? String(rawPoNo).trim()
-            : `PO-XLS-${Date.now()}-${index}`; 
-
-          const amount = Number(
-            getCol(row, 'Total', 'totalCost') ??
-            getCol(row, 'Amount') ??
-            getCol(row, 'Spending USD') ??
-            getCol(row, 'Spending IDR') ??
-            0
-          );
-
-          const category = getCol(row, 'Category') ?? getCol(row, 'Product Group') ?? 'Raw Material';
-          const supplierName = String(getCol(row, 'Supplier', 'supplier') ?? '').trim();
-          const dateVal = getCol(row, 'Date');
-          const origin = getCol(row, 'Local/Import');
-          const itemDesc = getCol(row, 'Notes') ?? getCol(row, 'Description') ?? getCol(row, 'Part');
-
-          if (!poGroups.has(poNo)) {
-            poGroups.set(poNo, {
-              poNumber: poNo,
-              date: excelSerialToISODate(dateVal),
-              supplierName,
-              totalCost: 0,
-              status: mapStatusToEnum(getCol(row, 'Status')),
-              category: String(category),
-              origin: origin ? String(origin) : '',
-              descriptions: []
-            });
+        rawData.forEach((row) => {
+          const rawPo = getCol(row, 'PO', 'PO Number', 'poNumber');
+          if (rawPo === undefined) {
+            skippedCount++;
+            return;
           }
 
-          const group = poGroups.get(poNo);
-          group.totalCost += isNaN(amount) ? 0 : amount;
-          if (itemDesc) group.descriptions.push(String(itemDesc));
-        });
+          const currency = String(getCol(row, 'Currency') ?? 'IDR').trim().toUpperCase();
+          const qty = toNumber(getCol(row, 'Qty Received', 'Qty'));
+          const price = toNumber(getCol(row, 'Price'));
+          const rawAmount = getCol(row, 'Amount');
+          const amount = rawAmount !== undefined ? toNumber(rawAmount) : round2(qty * price);
 
-        const existingPoNumbers = orders.map((o) => o.poNumber?.toLowerCase());
-        
-        let duplicateCount = 0;
-        const validRows = [];
+          const receiptDate = parseExcelDate(getCol(row, 'Date'));
+          const rawYear = getCol(row, 'Year');
+          const rowYear = rawYear !== undefined ? rawYear : (receiptDate ? receiptDate.slice(0, 4) : '');
 
-        Array.from(poGroups.values()).forEach((g) => {
-          if (existingPoNumbers.includes(g.poNumber.toLowerCase())) {
+          const fallback = computeSpending(amount, currency, rowYear);
+          const rawIdr = getCol(row, 'Spending IDR');
+          const rawUsd = getCol(row, 'Spending USD');
+
+          const item = {
+            mainClass: cleanCode(getCol(row, 'Main Class')),
+            classCode: cleanCode(getCol(row, 'Class')),
+            productGroup: cleanCode(getCol(row, 'Product Group')),
+            subCategory: cleanCode(getCol(row, 'Sub category', 'Sub Category')),
+            type: cleanCode(getCol(row, 'Type')),
+            packSlip: String(getCol(row, 'Pack Slip', 'Pack Slip No', 'PackSlip') ?? ''),
+            receiptDate: receiptDate || '',
+            poNumber: String(rawPo).trim(),
+            poLine: getCol(row, 'PO Line') ?? '',
+            poRel: String(getCol(row, 'PO Rel', 'PO Release', 'PO Rev') ?? ''),
+            part: String(getCol(row, 'Part') ?? ''),
+            description: String(getCol(row, 'Description') ?? ''),
+            qtyReceived: qty,
+            uom: String(getCol(row, 'UOM') ?? ''),
+            price,
+            amount,
+            year: rowYear,
+            spendingIdr: rawIdr !== undefined ? toNumber(rawIdr) : fallback.idr,
+            spendingUsd: rawUsd !== undefined ? toNumber(rawUsd) : fallback.usd,
+            currency,
+            supplier: String(getCol(row, 'Supplier', 'supplier') ?? '').trim(),
+            localImport: String(getCol(row, 'Local/Import', 'Local /Import', 'Local / Import') ?? '')
+          };
+
+          if (existingKeys.has(rowKey(item))) {
             duplicateCount++;
           } else {
-            validRows.push({
-              poNumber: g.poNumber,
-              date: g.date,
-              supplierName: g.supplierName,
-              totalCost: g.totalCost,
-              status: g.status,
-              category: g.category,
-              notes: [g.origin, g.descriptions.join('; ')].filter(Boolean).join(' — ')
-            });
+            validRows.push(item);
           }
         });
 
-        if (validRows.length === 0 && duplicateCount > 0) {
-          showToast(`Gagal! Semua data PO (${duplicateCount} baris) sudah ada di sistem (Duplikat).`, 'error');
-          e.target.value = null; 
+        if (validRows.length === 0) {
+          showToast(
+            duplicateCount > 0
+              ? `All rows (${duplicateCount}) already exist in system (Duplicate).`
+              : 'No rows with PO number available to import!',
+            'error'
+          );
+          setIsUploading(false);
+          e.target.value = null;
           return;
         }
 
-        showToast(`Menyiapkan ${validRows.length} PO baru, ${duplicateCount} duplikat diabaikan...`, 'success');
+        await ensureSuppliers(validRows.map((r) => r.supplier));
 
+        const BATCH_SIZE = 25;
         let successCount = 0;
         let failCount = 0;
 
-        for (const row of validRows) {
-          try {
-            let supplierId = null;
-            if (row.supplierName) {
-              const matchedSupplier = daftarSupplierObjects.find(
-                (s) => (s.name || s.nama || '').toLowerCase() === row.supplierName.toLowerCase()
-              );
+        for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+          const batch = validRows.slice(i, i + BATCH_SIZE);
+          const currentProcessed = Math.min(i + BATCH_SIZE, validRows.length);
+          const pct = Math.round((currentProcessed / validRows.length) * 100);
+          setUploadProgress(pct);
 
-              if (matchedSupplier) {
-                supplierId = matchedSupplier.id;
-              } else {
-                // ✅ FIX: Gunakan API_ENDPOINTS
-                const createRes = await fetch(API_ENDPOINTS.SUPPLIERS, {
+          showToast(`Uploading data to server... ${pct}% (${currentProcessed}/${validRows.length} rows)`, 'info');
+
+          await Promise.all(
+            batch.map(async (row) => {
+              try {
+                const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: row.supplierName, status: 'Active' })
+                  body: JSON.stringify(buildPayload(row))
                 });
-                if (createRes.ok) {
-                  const created = await createRes.json();
-                  supplierId = created.id;
-                }
+                if (response.ok) successCount++;
+                else failCount++;
+              } catch (rowErr) {
+                failCount++;
               }
-            }
-            
-            // ✅ FIX: Gunakan API_ENDPOINTS
-            const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                po_no: row.poNumber,
-                supplier_id: supplierId,
-                category: row.category,
-                description: row.notes,
-                total_amount: row.totalCost,
-                order_status: row.status,
-                order_date: row.date
-              })
-            });
-
-            if (response.ok) {
-              successCount++;
-            } else {
-              failCount++;
-            }
-          } catch (rowErr) {
-            console.error(`Gagal insert baris PO ${row.poNumber}:`, rowErr);
-            failCount++;
-          }
+            })
+          );
         }
 
         await fetchSuppliersFromBackend();
         await fetchOrdersFromBackend();
 
-        if (failCount === 0) {
-          showToast(
-            duplicateCount > 0
-              ? `${successCount} PO berhasil di-import, ${duplicateCount} PO dilewati (duplikat).`
-              : `${successCount} PO berhasil di-import ke database!`,
-            'success'
-          );
-        } else {
-          showToast(`${successCount} PO berhasil, ${failCount} gagal di-import. Cek Console!`, 'error');
-        }
+        setIsUploading(false);
+        const notes = [];
+        if (duplicateCount > 0) notes.push(`${duplicateCount} duplicates skipped`);
+        if (skippedCount > 0) notes.push(`${skippedCount} without PO skipped`);
+        const suffix = notes.length > 0 ? ` (${notes.join(', ')})` : '';
 
+        if (failCount === 0) {
+          showToast(`Done! ${successCount} PO rows successfully imported${suffix}.`, 'success');
+        } else {
+          showToast(`${successCount} succeeded, ${failCount} failed to import.`, 'error');
+        }
       } catch (err) {
-        console.error('Error proses Excel:', err);
-        showToast('Terjadi kesalahan sistem saat membaca file Excel!', 'error');
+        console.error('Error processing Excel:', err);
+        showToast('System error occurred while reading Excel file!', 'error');
+        setIsUploading(false);
       }
-      
-      e.target.value = null; 
+
+      e.target.value = null;
     };
 
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
   };
 
-  const handleAddItem = () => {
-    setFormData(prev => ({
-      ...prev,
-      items: [...prev.items, { id: Date.now(), partNum: '', name: '', dueDate: '', qty: 1, uom: 'EA', price: 0 }]
-    }));
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingId(null);
   };
 
-  const handleRemoveItem = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      items: prev.items.filter((_, i) => i !== index)
-    }));
-  };
+  const handleFormChange = (name, value) => {
+    setFormData((prev) => {
+      const next = { ...prev, [name]: name === 'currency' ? String(value).toUpperCase() : value };
 
-  const handleItemChange = (index, field, value) => {
-    setFormData(prev => {
-      const updated = [...prev.items];
-      updated[index] = { ...updated[index], [field]: value };
-      return { ...prev, items: updated };
+      if (name === 'receiptDate' && value) next.year = String(value).slice(0, 4);
+
+      if (name === 'qtyReceived' || name === 'price') {
+        next.amount = round2(toNumber(next.qtyReceived) * toNumber(next.price));
+      }
+
+      if (['qtyReceived', 'price', 'amount', 'currency', 'receiptDate', 'year'].includes(name)) {
+        const { idr, usd } = computeSpending(next.amount, next.currency, next.year);
+        next.spendingIdr = idr;
+        next.spendingUsd = usd;
+      }
+
+      return next;
     });
+  };
+
+  const ensureSuppliers = async (names) => {
+    const known = new Set(
+      daftarSupplierObjects.map((s) =>
+        String(typeof s === 'string' ? s : (s.name || s.nama || '')).trim().toLowerCase()
+      )
+    );
+
+    const missing = new Map();
+    names.forEach((n) => {
+      const name = String(n || '').trim();
+      if (name && !known.has(name.toLowerCase()) && !missing.has(name.toLowerCase())) {
+        missing.set(name.toLowerCase(), name);
+      }
+    });
+
+    for (const name of missing.values()) {
+      try {
+        await fetch(API_ENDPOINTS.SUPPLIERS, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, status: 'Active' })
+        });
+      } catch (err) {
+        console.error(`Failed to create supplier ${name}:`, err);
+      }
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    const poNumber = String(formData.poNumber || '').trim();
+    if (!poNumber) {
+      showToast('PO Number is required', 'error');
+      return;
+    }
+
+    const payload = buildPayload({
+      ...formData,
+      poNumber,
+      year: formData.year || (formData.receiptDate ? String(formData.receiptDate).slice(0, 4) : '')
+    });
+
+    try {
+      const url = editingId
+        ? `${API_ENDPOINTS.PURCHASE_ORDERS}/${editingId}`
+        : API_ENDPOINTS.PURCHASE_ORDERS;
+
+      const response = await fetch(url, {
+        method: editingId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (result.success || response.ok) {
+        await ensureSuppliers([formData.supplier]);
+        showToast(editingId ? 'PO Successfully Updated!' : 'PO Successfully Saved!', 'success');
+        fetchOrdersFromBackend();
+        fetchSuppliersFromBackend();
+        closeModal();
+      } else {
+        showToast('Failed to save PO', 'error');
+      }
+    } catch (error) {
+      console.error('Failed to submit PO:', error);
+      showToast('Failed to save PO', 'error');
+    }
+  };
+
+  const deletePO = async (id, poNumber) => {
+    if (window.confirm(`Delete document ${poNumber || 'PO'} from database?`)) {
+      try {
+        const response = await fetch(`${API_ENDPOINTS.PURCHASE_ORDERS}/${id}`, { method: 'DELETE' });
+        if (response.ok) {
+          showToast(`PO ${poNumber} successfully deleted.`, 'success');
+          fetchOrdersFromBackend();
+        } else {
+          const updated = orders.filter(o => o.id !== id);
+          setOrders(updated);
+          setPOCache(updated);
+          showToast(`PO ${poNumber} deleted locally.`, 'success');
+        }
+      } catch (error) {
+        console.error('Error while deleting PO:', error);
+        const updated = orders.filter(o => o.id !== id);
+        setOrders(updated);
+        setPOCache(updated);
+        showToast(`PO ${poNumber} deleted locally.`, 'success');
+      }
+    }
+  };
+
+  const handleEditClick = (row) => {
+    const { id, ...fields } = row;
+    setEditingId(id ?? null);
+    setFormData({ ...getEmptyForm(), ...fields });
+    setIsModalOpen(true);
   };
 
   const handleTriggerPrint = (order) => setPrintOrder(order);
   const handleNavigate = (p) => changePage?.(p);
   const handleLogout = () => onLogout?.();
+
+  const printRows = printOrder ? orders.filter((r) => r.poNumber === printOrder.poNumber) : [];
+  const printTotal = printRows.reduce((sum, r) => sum + r.amount, 0);
+
+  const inputCls = `w-full px-2.5 py-1.5 border rounded ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-200'}`;
+
+  const formFields = [
+    { name: 'poNumber', label: 'PO *', type: 'text', required: true },
+    { name: 'poLine', label: 'PO Line', type: 'number' },
+    { name: 'poRel', label: 'PO Rel', type: 'text' },
+    { name: 'mainClass', label: 'Main Class', type: 'text' },
+    { name: 'classCode', label: 'Class', type: 'text' },
+    { name: 'productGroup', label: 'Product Group', type: 'text' },
+    { name: 'subCategory', label: 'Sub Category', type: 'text' },
+    { name: 'type', label: 'Type', type: 'text' },
+    { name: 'packSlip', label: 'Pack Slip', type: 'text' },
+    { name: 'receiptDate', label: 'Date', type: 'date' },
+    { name: 'part', label: 'Part', type: 'text' },
+    { name: 'description', label: 'Description', type: 'text', wide: true },
+    { name: 'qtyReceived', label: 'Qty Received', type: 'number' },
+    { name: 'uom', label: 'UOM', type: 'text' },
+    { name: 'price', label: 'Price', type: 'number' },
+    { name: 'amount', label: 'Amount', type: 'number' },
+    { name: 'year', label: 'Year', type: 'number' },
+    { name: 'currency', label: 'Currency', type: 'text' },
+    { name: 'spendingIdr', label: 'Spending IDR', type: 'number' },
+    { name: 'spendingUsd', label: 'Spending USD', type: 'number' },
+    { name: 'supplier', label: 'Supplier *', type: 'text', required: true, wide: true },
+    { name: 'localImport', label: 'Local/Import', type: 'select', options: ['Local', 'Import'] }
+  ];
+
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
       
@@ -618,47 +777,18 @@ export default function PurchaseOrders({
         <div className={`fixed top-5 right-5 z-[9999] px-6 py-3 rounded-lg shadow-xl flex items-center gap-3 transition-all transform duration-300 border ${
           toast.type === 'error' 
             ? 'bg-[#FFF2F2] border-[#FFD9D9] text-[#B31919]' 
+            : toast.type === 'info'
+            ? 'bg-blue-600 border-blue-700 text-white'
             : 'bg-emerald-500 border-emerald-500 text-white'
         }`}>
-          <div className={`flex items-center justify-center w-6 h-6 rounded-full shrink-0 ${toast.type === 'error' ? 'bg-[#FFD9D9] text-[#B31919]' : 'bg-white/20 text-white'}`}>
-             <i className={`fa-solid ${toast.type === 'error' ? 'fa-exclamation text-xs' : 'fa-check text-xs'}`}></i>
+          <div className={`flex items-center justify-center w-6 h-6 rounded-full shrink-0 ${
+            toast.type === 'error' ? 'bg-[#FFD9D9] text-[#B31919]' : 'bg-white/20 text-white'
+          }`}>
+             <i className={`fa-solid ${toast.type === 'error' ? 'fa-exclamation text-xs' : toast.type === 'info' ? 'fa-spinner fa-spin text-xs' : 'fa-check text-xs'}`}></i>
           </div>
           <span className="font-semibold text-sm">{toast.message}</span>
         </div>
       )}
-      
-      <style>{`
-        @media print {
-          html, body, #root {
-            height: auto !important;
-            overflow: visible !important;
-          }
-          * {
-            overflow: visible !important;
-            max-height: none !important;
-          }
-          body * {
-            visibility: hidden !important;
-          }
-          #printable-po-document, #printable-po-document * {
-            visibility: visible !important;
-          }
-          #printable-po-document {
-            position: absolute !important;
-            left: 0 !important;
-            top: 0 !important;
-            width: 100% !important;
-            padding: 20px !important;
-            margin: 0 !important;
-            box-shadow: none !important;
-            border: none !important;
-            background: white !important;
-          }
-          .no-print {
-            display: none !important;
-          }
-        }
-      `}</style>
 
       {/* HEADER UTAMA */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
@@ -731,7 +861,6 @@ export default function PurchaseOrders({
       
       {/* BODY CONTAINER */}
       <div className="flex flex-1 overflow-hidden">
-        {/* SIDEBAR */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
           <nav className="flex flex-col gap-2 px-4">
             {[
@@ -835,7 +964,7 @@ export default function PurchaseOrders({
             <div className="w-full max-w-6xl mx-auto flex flex-col h-full">
               <div className="mb-6">
                 <h1 className={`text-[28px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Excel Upload</h1>
-                <p className={`text-[15px] mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Import data supplier dari file Excel.</p>
+                <p className={`text-[15px] mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Import Purchase Order data from large Excel files.</p>
               </div>
               
               <div className={`flex-1 rounded-2xl border shadow-sm p-10 flex flex-col items-center justify-center text-center ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
@@ -843,21 +972,33 @@ export default function PurchaseOrders({
                   <i className="fa-solid fa-file-excel text-3xl"></i>
                 </div>
                 
-                <h2 className={`text-xl font-bold mb-3 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload Supplier Data via Excel</h2>
-                <p className={`text-sm max-w-lg mb-8 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                  Upload file .xlsx atau .xls untuk import atau memperbarui data supplier.
+                <h2 className={`text-xl font-bold mb-3 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload Purchase Order Data via Excel</h2>
+                <p className={`text-sm max-w-lg mb-6 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                  The system has been optimized to process large Excel files (&gt; 5 MB).
                 </p>
+
+                {isUploading && (
+                  <div className="w-full max-w-md mb-6">
+                    <div className="flex justify-between text-xs font-bold mb-2">
+                      <span>Upload Progress...</span>
+                      <span>{uploadProgress}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                      <div className="bg-[#00A651] h-3 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                    </div>
+                  </div>
+                )}
                 
-                <label className="cursor-pointer bg-[#00A651] hover:bg-[#008F45] text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center gap-2 mb-6">
-                  <i className="fa-solid fa-upload"></i> Choose Excel File
-                  <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} className="hidden" />
+                <label className={`cursor-pointer ${isUploading ? 'bg-gray-400 pointer-events-none' : 'bg-[#00A651] hover:bg-[#008F45]'} text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center gap-2 mb-6`}>
+                  <i className="fa-solid fa-upload"></i> {isUploading ? 'Processing File...' : 'Choose Excel File'}
+                  <input type="file" accept=".xlsx, .xls" disabled={isUploading} onChange={handleFileUpload} className="hidden" />
                 </label>
                 
                 <button 
                   onClick={() => setShowUploadView(false)}
                   className={`text-sm font-semibold flex items-center gap-2 transition-colors ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-[#004797] hover:text-blue-700'}`}
                 >
-                  <i className="fa-solid fa-arrow-left"></i> Kembali ke Supplier List
+                  <i className="fa-solid fa-arrow-left"></i> Back to PO Transaction List
                 </button>
               </div>
             </div>
@@ -880,47 +1021,110 @@ export default function PurchaseOrders({
                     <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Purchase Orders</p>
                     <div className="flex items-baseline gap-1.5">
                       <span className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{stats.totalPO}</span>
-                      <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Orders</span>
+                      <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Orders ({stats.totalLines} lines)</span>
                     </div>
                   </div>
                 </div>
 
                 <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-12 h-12 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
-                    <i className="fa-solid fa-rotate-left text-xl"></i>
+                    <i className="fa-solid fa-dollar-sign text-xl"></i>
                   </div>
                   <div className="overflow-hidden">
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Awaiting Payment</p>
-                    <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSDWithExchange(stats.waitingPaymentTotal, 'IDR')}</span>
+                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (USD)</p>
+                    <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{usdFormatter.format(stats.totalUSD)}</span>
                   </div>
                 </div>
 
                 <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-12 h-12 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0">
-                    <i className="fa-solid fa-check text-xl"></i>
+                    <i className="fa-solid fa-money-bill-wave text-xl"></i>
                   </div>
                   <div className="overflow-hidden">
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Completed POs</p>
-                    <div className="flex items-baseline gap-1.5">
-                      <span className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{stats.completedCount}</span>
-                      <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Orders</span>
-                    </div>
+                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (IDR)</p>
+                    <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{idrFormatter.format(stats.totalIDR)}</span>
                   </div>
                 </div>
               </div>
 
-              {/* TABEL PER 15 BARIS */}
+              {/* TABLE AREA WITH YEAR & MONTH FILTERS */}
               <div className={`border shadow-xs rounded-2xl p-6 overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
                   <div className="flex items-center gap-3">
                     <h2 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>PO Transaction List</h2>
                   </div>
-                  <div className="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto">
+
+                  {/* FILTERS CONTAINER: YEAR, MONTH, SEARCH, & RESET */}
+                  <div className="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto flex-wrap">
+                    {/* FILTER YEAR */}
+                    <div className="w-full sm:w-auto">
+                      <select
+                        value={selectedYear}
+                        onChange={(e) => setSelectedYear(e.target.value)}
+                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
+                          isDarkMode 
+                            ? 'bg-[#0F172A] border-slate-700 text-white' 
+                            : 'bg-gray-50 border-gray-200 text-gray-900'
+                        }`}
+                      >
+                        <option value="All">All Years</option>
+                        {availableYears.map((yr) => (
+                          <option key={yr} value={yr}>{yr}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* FILTER MONTH */}
+                    <div className="w-full sm:w-auto">
+                      <select
+                        value={selectedMonth}
+                        onChange={(e) => setSelectedMonth(e.target.value)}
+                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
+                          isDarkMode 
+                            ? 'bg-[#0F172A] border-slate-700 text-white' 
+                            : 'bg-gray-50 border-gray-200 text-gray-900'
+                        }`}
+                      >
+                        {MONTH_OPTIONS.map((m) => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* SEARCH INPUT */}
                     <div className="relative w-full sm:w-64">
-                      <input type="text" placeholder="Search PO, Supplier..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-                        className={`w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'}`} />
+                      <input 
+                        type="text" 
+                        placeholder="Search PO, Supplier, Part..." 
+                        value={searchTerm} 
+                        onChange={e => setSearchTerm(e.target.value)}
+                        className={`w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 ${
+                          isDarkMode 
+                            ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' 
+                            : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'
+                        }`} 
+                      />
                       <i className="fa-solid fa-magnifying-glass absolute left-3 top-3 text-xs text-gray-400"></i>
                     </div>
+
+                    {/* RESET FILTER BUTTON */}
+                    {(selectedYear !== 'All' || selectedMonth !== 'All' || searchTerm !== '') && (
+                      <button
+                        onClick={() => {
+                          setSelectedYear('All');
+                          setSelectedMonth('All');
+                          setSearchTerm('');
+                        }}
+                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                          isDarkMode 
+                            ? 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700' 
+                            : 'border-gray-200 bg-gray-100 text-gray-600 hover:text-gray-900 hover:bg-gray-200'
+                        }`}
+                        title="Reset Filters"
+                      >
+                        <i className="fa-solid fa-rotate-left"></i> Reset
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -928,8 +1132,10 @@ export default function PurchaseOrders({
                   <table className="w-full min-w-max text-left text-sm whitespace-nowrap">
                     <thead>
                       <tr className={`border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A] text-slate-400' : 'border-gray-200 bg-gray-50/50 text-gray-500'}`}>
+                        <th className="py-3 font-semibold px-4">Main Class</th>
+                        <th className="py-3 font-semibold px-4">Class</th>
                         <th className="py-3 font-semibold px-4">Product Group</th>
-                        <th className="py-3 font-semibold px-4">Sub category</th>
+                        <th className="py-3 font-semibold px-4">Sub Category</th>
                         <th className="py-3 font-semibold px-4">Type</th>
                         <th className="py-3 font-semibold px-4">Pack Slip</th>
                         <th className="py-3 font-semibold px-4">Date</th>
@@ -942,84 +1148,68 @@ export default function PurchaseOrders({
                         <th className="py-3 font-semibold px-4 text-center">UOM</th>
                         <th className="py-3 font-semibold px-4 text-right">Price</th>
                         <th className="py-3 font-semibold px-4 text-right">Amount</th>
+                        <th className="py-3 font-semibold px-4 text-center">Year</th>
                         <th className="py-3 font-semibold px-4 text-right">Spending IDR</th>
                         <th className="py-3 font-semibold px-4 text-right">Spending USD</th>
                         <th className="py-3 font-semibold px-4 text-center">Currency</th>
                         <th className="py-3 font-semibold px-4">Supplier</th>
                         <th className="py-3 font-semibold px-4 text-center">Local/Import</th>
-                        <th className={`py-3 font-semibold px-4 text-center sticky right-0 z-10 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-50/50'}`}>Actions</th>
+                        <th className={`py-3 font-semibold px-4 text-center sticky right-0 z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>Actions</th>
                       </tr>
                     </thead>
                     <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
                       {currentPaginatedRows.length === 0 ? (
-                        <tr><td colSpan="20" className="py-8 text-center text-gray-400">No PO data available.</td></tr>
+                        <tr><td colSpan="23" className="py-8 text-center text-gray-400">No PO data available.</td></tr>
                       ) : (
-                        currentPaginatedRows.map(({ order, item, itemIndex, rowId }) => {
-                          const catName = order.category || order.kategori || 'Raw Material';
-                          const dateStr = order.date || order.tanggal || new Date().toISOString().split('T')[0];
-                          const isImport = order.purchasePoint === 'Import' || (order.supplier || '').toLowerCase().includes('overseas');
-                          const orderType = order.type || 'Standard';
-                          
-                          const partNum = item.partNum || '-';
-                          const description = item.name || order.notes || order.description || '-';
-                          const qty = item.qty || item.quantity || 0;
-                          const uom = item.uom || 'EA';
-                          const price = item.price || item.harga || 0;
-                          
-                          const amount = qty > 0 ? (qty * price) : (order.totalCost || calculateGrandTotal(order) || 0);
-                          const currentCurrency = String(order.currency || 'USD').toUpperCase();
-                          const isUSD = currentCurrency === 'USD';
-                          
-                          const spendingIDR = isUSD ? amount * KURS_IDR_TO_USD : amount;
-                          const spendingUSD = isUSD ? amount : amount / KURS_IDR_TO_USD;
+                        currentPaginatedRows.map((row) => (
+                          <tr key={row.id ?? `${row.poNumber}-${row.poLine}-${row.packSlip}`} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                            <td className="py-3 px-4">{row.mainClass || '-'}</td>
+                            <td className="py-3 px-4">{row.classCode || '-'}</td>
+                            <td className="py-3 px-4">{row.productGroup || '-'}</td>
+                            <td className="py-3 px-4">{row.subCategory || '-'}</td>
+                            <td className="py-3 px-4">{row.type || '-'}</td>
+                            <td className="py-3 px-4">{row.packSlip || '-'}</td>
+                            <td className="py-3 px-4">{row.receiptDate || '-'}</td>
+                            <td className="py-3 px-4 font-bold text-red-500 cursor-pointer hover:underline">{row.poNumber}</td>
+                            <td className="py-3 px-4 text-center">{row.poLine || '-'}</td>
+                            <td className="py-3 px-4">{row.poRel || '-'}</td>
+                            <td className="py-3 px-4">{row.part || '-'}</td>
+                            <td className="py-3 px-4 max-w-[200px] truncate" title={row.description}>{row.description || '-'}</td>
+                            <td className="py-3 px-4 text-center">{qtyFormatter.format(row.qtyReceived)}</td>
+                            <td className="py-3 px-4 text-center">{row.uom || '-'}</td>
+                            <td className="py-3 px-4 text-right">{moneyFormatter.format(row.price)}</td>
+                            <td className="py-3 px-4 text-right font-semibold">{moneyFormatter.format(row.amount)}</td>
+                            <td className="py-3 px-4 text-center">{row.year || '-'}</td>
+                            <td className="py-3 px-4 text-right">{idrFormatter.format(row.spendingIdr)}</td>
+                            <td className="py-3 px-4 text-right">{usdFormatter.format(row.spendingUsd)}</td>
+                            <td className="py-3 px-4 text-center">{row.currency || '-'}</td>
+                            <td className="py-3 px-4 font-bold">{row.supplier || '-'}</td>
+                            <td className="py-3 px-4 text-center">{row.localImport || '-'}</td>
 
-                          return (
-                            <tr key={rowId} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                              <td className="py-3 px-4">{catName}</td>
-                              <td className="py-3 px-4">-</td>
-                              <td className="py-3 px-4">{orderType}</td>
-                              <td className="py-3 px-4">-</td>
-                              <td className="py-3 px-4">{dateStr}</td>
-                              <td className="py-3 px-4 font-bold text-red-500 cursor-pointer hover:underline">{order.poNumber}</td>
-                              <td className="py-3 px-4 text-center">{itemIndex + 1}</td>
-                              <td className="py-3 px-4">-</td>
-                              <td className="py-3 px-4">{partNum}</td>
-                              <td className="py-3 px-4 max-w-[200px] truncate" title={description}>{description}</td>
-                              <td className="py-3 px-4 text-center">{qty || '-'}</td>
-                              <td className="py-3 px-4 text-center">{uom}</td>
-                              <td className="py-3 px-4 text-right">{new Intl.NumberFormat('en-US').format(price)}</td>
-                              <td className="py-3 px-4 text-right font-semibold">{new Intl.NumberFormat('en-US').format(amount)}</td>
-                              <td className="py-3 px-4 text-right">{new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(spendingIDR)}</td>
-                              <td className="py-3 px-4 text-right">{usdFormatter.format(spendingUSD)}</td>
-                              <td className="py-3 px-4 text-center">{currentCurrency}</td>
-                              <td className="py-3 px-4 font-bold">{order.supplier || order.namaSupplier || '-'}</td>
-                              <td className="py-3 px-4 text-center">{isImport ? 'Import' : 'Local'}</td>
-                              
-                              <td className={`py-3 px-4 text-center sticky right-0 z-10 ${isDarkMode ? 'bg-[#1E293B] hover:bg-slate-800' : 'bg-white hover:bg-gray-50'}`}>
-                                <div className="flex items-center justify-center gap-2">
-                                  <button onClick={() => handleTriggerPrint(order)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Print PO">
-                                    <i className="fa-solid fa-print"></i>
-                                  </button>
-                                  {canManageUsers && (
-                                    <>
-                                      <button onClick={() => handleEditClick(order)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Edit"><i className="fa-regular fa-pen-to-square"></i></button>
-                                      <button onClick={() => deletePO(order.id, order.poNumber)} className="text-gray-400 hover:text-red-500 p-1 cursor-pointer" title="Delete"><i className="fa-regular fa-trash-can"></i></button>
-                                    </>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })
+                            <td className={`py-3 px-4 text-center sticky right-0 z-10 ${isDarkMode ? 'bg-[#1E293B] hover:bg-slate-800' : 'bg-white hover:bg-gray-50'}`}>
+                              <div className="flex items-center justify-center gap-2">
+                                <button onClick={() => handleTriggerPrint(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Print PO">
+                                  <i className="fa-solid fa-print"></i>
+                                </button>
+                                {canManageUsers && (
+                                  <>
+                                    <button onClick={() => handleEditClick(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Edit"><i className="fa-regular fa-pen-to-square"></i></button>
+                                    <button onClick={() => deletePO(row.id, row.poNumber)} className="text-gray-400 hover:text-red-500 p-1 cursor-pointer" title="Delete"><i className="fa-regular fa-trash-can"></i></button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))
                       )}
                     </tbody>
                   </table>
                 </div>
 
-                {/* BOTTOM PAGINATION CONTROLS (NEXT PAGE / PREVIOUS PAGE) */}
+                {/* BOTTOM PAGINATION CONTROLS */}
                 <div className={`mt-4 pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-4 text-sm ${isDarkMode ? 'border-slate-800 text-slate-400' : 'border-gray-200 text-gray-600'}`}>
                   <div>
-                    Menampilkan <span className="font-bold text-[#004797]">{allFlattenedRows.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, allFlattenedRows.length)}</span> dari total <span className="font-bold">{allFlattenedRows.length}</span> baris
+                    Showing <span className="font-bold text-[#004797]">{filteredRows.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, filteredRows.length)}</span> of total <span className="font-bold">{filteredRows.length}</span> rows
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -1036,7 +1226,7 @@ export default function PurchaseOrders({
                     </button>
 
                     <span className="px-3 py-1 text-xs font-semibold">
-                      Halaman {currentPage} dari {totalPages}
+                      Page {currentPage} of {totalPages}
                     </span>
 
                     <button
@@ -1061,34 +1251,54 @@ export default function PurchaseOrders({
       {/* MODAL FORM EDIT / ADD PO */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-sm">
-          <form onSubmit={handleSubmit} className={`rounded-xl max-w-7xl w-full flex flex-col shadow-2xl border max-h-[96vh] ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-800'}`}>
+          <form onSubmit={handleSubmit} className={`rounded-xl max-w-5xl w-full flex flex-col shadow-2xl border max-h-[96vh] ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-800'}`}>
             <div className={`px-4 py-3 border-b flex justify-between items-center rounded-t-xl shrink-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-slate-50 border-gray-200'}`}>
               <div className="flex items-center gap-3 flex-wrap">
-                <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>PO {formData.poNo || formData.poNumber}</span>
+                <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>PO {formData.poNumber}</span>
+                {formData.poLine !== '' && (
+                  <span className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Line {formData.poLine}</span>
+                )}
               </div>
-              <button type="button" onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-red-500 text-lg">
+              <button type="button" onClick={closeModal} className="text-gray-400 hover:text-red-500 text-lg">
                 <i className="fa-solid fa-xmark"></i>
               </button>
             </div>
 
-            <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100/60'}`}>
+            <div className={`flex-1 overflow-y-auto p-4 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100/60'}`}>
               <div className={`border rounded-xl p-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                  <div>
-                    <label className="block mb-1 font-semibold">PO Number *</label>
-                    <input type="text" required value={formData.poNo || formData.poNumber} onChange={e => setFormData({ ...formData, poNo: e.target.value, poNumber: e.target.value })} className={`w-full px-2.5 py-1.5 border rounded ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-200'}`} />
-                  </div>
-                  <div>
-                    <label className="block mb-1 font-semibold">Supplier *</label>
-                    <input type="text" required value={formData.supplier} onChange={e => setFormData({ ...formData, supplier: e.target.value })} className={`w-full px-2.5 py-1.5 border rounded ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-200'}`} />
-                  </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                  {formFields.map((f) => (
+                    <div key={f.name} className={f.wide ? 'md:col-span-2' : ''}>
+                      <label className="block mb-1 font-semibold">{f.label}</label>
+                      {f.type === 'select' ? (
+                        <select
+                          value={formData[f.name] ?? ''}
+                          onChange={(e) => handleFormChange(f.name, e.target.value)}
+                          className={inputCls}
+                        >
+                          {Array.from(new Set([...f.options, formData[f.name]].filter(Boolean))).map((opt) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          type={f.type}
+                          step={f.type === 'number' ? 'any' : undefined}
+                          required={f.required}
+                          value={formData[f.name] ?? ''}
+                          onChange={(e) => handleFormChange(f.name, e.target.value)}
+                          className={inputCls}
+                        />
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
 
             <div className={`px-4 py-3 border-t flex justify-end gap-2 ${isDarkMode ? 'border-slate-700 bg-[#1E293B]' : 'border-gray-200 bg-gray-50'}`}>
-              <button type="button" onClick={() => setIsModalOpen(false)} className="px-4 py-2 text-xs font-semibold border rounded-lg">Batal</button>
-              <button type="submit" className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700">Simpan PO</button>
+              <button type="button" onClick={closeModal} className="px-4 py-2 text-xs font-semibold border rounded-lg">Cancel</button>
+              <button type="submit" className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save PO</button>
             </div>
           </form>
         </div>
@@ -1101,7 +1311,8 @@ export default function PurchaseOrders({
             <div>
               <h1 className="text-3xl font-bold text-gray-800">PURCHASE ORDER</h1>
               <p className="text-gray-600 mt-2 font-semibold text-lg">PO Number: {printOrder.poNumber}</p>
-              <p className="text-gray-600">Date: {printOrder.date}</p>
+              <p className="text-gray-600">Date: {printOrder.receiptDate || '-'}</p>
+              <p className="text-gray-600">Supplier: {printOrder.supplier || '-'}</p>
             </div>
             <div className="text-right">
               <h2 className="text-2xl font-bold text-red-600">Detmold Packaging</h2>
@@ -1113,23 +1324,33 @@ export default function PurchaseOrders({
             <thead>
               <tr className="bg-gray-100">
                 <th className="border border-gray-300 p-3 text-left w-12">No</th>
-                <th className="border border-gray-300 p-3 text-left">Item Description</th>
+                <th className="border border-gray-300 p-3 text-left">Part</th>
+                <th className="border border-gray-300 p-3 text-left">Description</th>
                 <th className="border border-gray-300 p-3 text-center w-20">Qty</th>
+                <th className="border border-gray-300 p-3 text-center w-20">UOM</th>
                 <th className="border border-gray-300 p-3 text-right w-32">Unit Price</th>
                 <th className="border border-gray-300 p-3 text-right w-32">Total</th>
               </tr>
             </thead>
             <tbody>
-              {(printOrder.items && printOrder.items.length > 0 ? printOrder.items : [{ name: printOrder.notes || printOrder.description || '-', qty: 1, price: printOrder.totalCost }]).map((it, idx) => (
-                <tr key={idx}>
-                  <td className="border border-gray-300 p-3 text-center">{idx + 1}</td>
-                  <td className="border border-gray-300 p-3">{it.name || it.deskripsi || '-'}</td>
-                  <td className="border border-gray-300 p-3 text-center">{it.qty || 1}</td>
-                  <td className="border border-gray-300 p-3 text-right">{new Intl.NumberFormat('en-US').format(it.price || 0)}</td>
-                  <td className="border border-gray-300 p-3 text-right">{new Intl.NumberFormat('en-US').format((it.qty || 1) * (it.price || 0))}</td>
+              {printRows.map((r, idx) => (
+                <tr key={r.id ?? idx}>
+                  <td className="border border-gray-300 p-3 text-center">{r.poLine || idx + 1}</td>
+                  <td className="border border-gray-300 p-3">{r.part || '-'}</td>
+                  <td className="border border-gray-300 p-3">{r.description || '-'}</td>
+                  <td className="border border-gray-300 p-3 text-center">{qtyFormatter.format(r.qtyReceived)}</td>
+                  <td className="border border-gray-300 p-3 text-center">{r.uom || '-'}</td>
+                  <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(r.price)}</td>
+                  <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(r.amount)}</td>
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr className="bg-gray-100 font-bold">
+                <td className="border border-gray-300 p-3 text-right" colSpan="6">Total ({printOrder.currency || '-'})</td>
+                <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(printTotal)}</td>
+              </tr>
+            </tfoot>
           </table>
         </div>
       )}

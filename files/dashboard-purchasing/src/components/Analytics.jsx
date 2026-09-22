@@ -3,7 +3,39 @@ import { useRole } from '../context/RoleContext';
 import { API_ENDPOINTS } from '../utils/api.config';
 
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
-const EXCHANGE_RATE_IDR_TO_USD = 16000; 
+const EXCHANGE_RATE_IDR_TO_USD = 16000; // dipakai hanya jika baris tidak punya Spending USD
+
+// Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
+// Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
+const saveOrdersCache = (rows) => {
+  try {
+    localStorage.setItem('dataPO_Ladeu', JSON.stringify(rows));
+  } catch (storageError) {
+    try { localStorage.removeItem('dataPO_Ladeu'); } catch { /* abaikan */ }
+    console.warn('Cache lokal PO tidak bisa disimpan (data terlalu besar), lanjut tanpa cache.');
+  }
+};
+
+// Baris API (snake_case, kolom tabel purchase_orders) atau cache halaman lain (camelCase)
+// -> bentuk objek yang dipakai Analytics
+const toOrder = (po, suppliersMap = {}) => {
+  const rawDate = po.receipt_date || po.receiptDate || po.order_date || po.date;
+  const usd = po.spending_usd ?? po.spendingUsd ?? po.totalUsd;
+  return {
+    id: po.id,
+    poNumber: po.po_number || po.poNumber || po.po_no,
+    date: rawDate ? String(rawDate).split('T')[0] : '-',
+    supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
+    supplier_id: po.supplier_id,
+    totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0), // IDR
+    totalUsd: usd === undefined || usd === null ? null : Number(usd),
+    status: po.status || po.order_status || 'Pending',
+    // Kategori dari Product Group (mis. "RM - Plastic"); 0/kosong = belum diklasifikasi
+    category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Others',
+    notes: po.description || po.notes || '',
+    items: po.items || []
+  };
+};
 
 const usdFormatter = new Intl.NumberFormat('en-US', { 
   style: 'currency', 
@@ -23,6 +55,8 @@ const formatShortNumber = (val) => {
 
 const getOrderTotal = (order) => {
   if (!order) return 0;
+  // Spending USD dari tabel sudah memakai kurs per tahun -> pakai langsung
+  if (Number.isFinite(order.totalUsd) && order.totalUsd > 0) return order.totalUsd;
   const possibleKeys = [
     'total_amount', 'totalAmount', 'TotalAmount',
     'totalCost', 'TotalCost', 'total_cost',
@@ -219,51 +253,37 @@ export default function Analytics({ changePage, onLogout }) {
 
   // Load PO Data
   useEffect(() => {
+    const loadFromCache = () => {
+      try {
+        const savedPOs = localStorage.getItem('dataPO_Ladeu');
+        if (savedPOs) {
+          const parsedData = JSON.parse(savedPOs).map((po) => toOrder(po, suppliersMap));
+          setOrders(parsedData);
+          if (parsedData.length > 0) setSelectedSupplier(getOrderSupplier(parsedData[0]));
+        }
+      } catch (fallbackError) {}
+    };
+
     const fetchOrdersFromBackend = async () => {
       try {
         const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
-          const formattedOrders = data.map((po) => ({
-            id: po.id,
-            poNumber: po.po_number || po.po_no || po.poNumber,
-            date: po.order_date ? String(po.order_date).split('T')[0] : '-',
-            // Gunakan suppliersMap untuk mencocokkan nama
-            supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
-            supplier_id: po.supplier_id,
-            totalCost: Number(po.total_amount || po.totalCost || 0),
-            status: po.status || po.order_status || 'Pending',
-            category: po.category || 'Raw Material',
-            notes: po.description || po.notes || '',
-            items: po.items || []
-          }));
-          
+          const formattedOrders = data.map((po) => toOrder(po, suppliersMap));
+
           setOrders(formattedOrders);
-          // Samakan nama local storage dengan Dashboard
-          if (formattedOrders.length > 0) localStorage.setItem('dataPO_Ladeu', JSON.stringify(formattedOrders));
-          if (formattedOrders && formattedOrders.length > 0) setSelectedSupplier(getOrderSupplier(formattedOrders[0]));
-        } else {
-          // Fallback ke dataPO_Ladeu
-          const savedPOs = localStorage.getItem('dataPO_Ladeu');
-          if (savedPOs) {
-            const parsedData = JSON.parse(savedPOs);
-            setOrders(parsedData);
-            if (parsedData.length > 0) setSelectedSupplier(getOrderSupplier(parsedData[0]));
+          if (formattedOrders.length > 0) {
+            saveOrdersCache(formattedOrders);
+            setSelectedSupplier(getOrderSupplier(formattedOrders[0]));
           }
+        } else {
+          loadFromCache();
         }
       } catch (e) {
-        try {
-          // Fallback ke dataPO_Ladeu
-          const savedPOs = localStorage.getItem('dataPO_Ladeu');
-          if (savedPOs) {
-            const parsedData = JSON.parse(savedPOs);
-            setOrders(parsedData);
-            if (parsedData.length > 0) setSelectedSupplier(getOrderSupplier(parsedData[0]));
-          }
-        } catch (fallbackError) {}
+        loadFromCache();
       }
     };
-    
+
     fetchOrdersFromBackend();
   }, [suppliersMap]);
 
@@ -407,16 +427,20 @@ export default function Analytics({ changePage, onLogout }) {
       const cat = getOrderCategory(order);
       const costUSD = getOrderTotal(order);
 
-      if (!catMap[cat]) catMap[cat] = { totalCost: 0, count: 0 };
+      // Satu PO bisa punya banyak baris (line) -> hitung jumlah PO unik, bukan jumlah baris
+      if (!catMap[cat]) catMap[cat] = { totalCost: 0, poSet: new Set() };
       catMap[cat].totalCost += costUSD;
-      catMap[cat].count += 1;
+      catMap[cat].poSet.add(order.poNumber || `row-${order.id}`);
     });
 
-    return Object.keys(catMap).map((catName) => ({
-      category: catName,
-      avgCost: catMap[catName].totalCost / catMap[catName].count,
-      count: catMap[catName].count
-    }));
+    return Object.keys(catMap).map((catName) => {
+      const count = catMap[catName].poSet.size;
+      return {
+        category: catName,
+        avgCost: count > 0 ? catMap[catName].totalCost / count : 0,
+        count
+      };
+    });
   }, [orders, selectedYear]);
 
   // === LOGIKA DATA BREAKDOWN KATEGORI ===

@@ -17,7 +17,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '20mb' })); // import Excel dikirim per batch ratusan baris
 // Middleware untuk memantau semua request yang masuk
 app.use((req, res, next) => {
   console.log(`🌐 [INCOMING] ${req.method} ${req.url}`);
@@ -336,29 +336,109 @@ app.delete('/api/suppliers/:id', async (req, res) => {
 // =================================================================
 // 7. ENDPOINT PURCHASE ORDERS
 // =================================================================
+// Kolom tabel purchase_orders (satu baris tabel = satu baris Excel)
+const PO_COLUMNS = [
+  'main_class', 'class_code', 'product_group', 'sub_category',
+  'type', 'pack_slip', 'receipt_date', 'po_number', 'po_line', 'po_rel', 'part',
+  'description', 'qty_received', 'uom', 'price', 'amount', 'year',
+  'spending_idr', 'spending_usd', 'currency', 'supplier', 'local_import'
+];
+
+// receipt_date dikirim sebagai 'YYYY-MM-DD' agar tidak bergeser sehari akibat zona waktu
+const PO_SELECT = PO_COLUMNS
+  .map((c) => (c === 'receipt_date' ? "DATE_FORMAT(receipt_date, '%Y-%m-%d') AS receipt_date" : c))
+  .join(', ');
+
+const poValues = (body) =>
+  PO_COLUMNS.map((c) => (body[c] === '' || body[c] === undefined ? null : body[c]));
+
 app.get('/api/purchase-orders', async (req, res) => {
   try {
-    const [rows] = await pool.query(`
-      SELECT po.*, s.name AS supplier_name 
-      FROM purchase_orders po
-      LEFT JOIN suppliers s ON po.supplier_id = s.id
-      ORDER BY po.id DESC
-    `);
+    const [rows] = await pool.query(`SELECT id, ${PO_SELECT} FROM purchase_orders ORDER BY id DESC`);
     res.json(rows);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('❌ Error GET purchase-orders:', error.message);
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
 app.post('/api/purchase-orders', async (req, res) => {
-  const { po_no, supplier_id, category, description, total_amount, order_status, order_date } = req.body;
+  if (!req.body?.po_number) {
+    return res.status(400).json({ success: false, message: 'po_number wajib diisi' });
+  }
   try {
     const [result] = await pool.query(
-      'INSERT INTO purchase_orders (po_no, supplier_id, category, description, total_amount, order_status, order_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [po_no, supplier_id || null, category || 'Raw Material', description || '', total_amount || 0, order_status || 'Pending', order_date || new Date()]
+      `INSERT INTO purchase_orders (${PO_COLUMNS.join(', ')}) VALUES (${PO_COLUMNS.map(() => '?').join(', ')})`,
+      poValues(req.body)
     );
     return res.status(201).json({ success: true, id: result.insertId });
   } catch (error) {
+    console.error('❌ Error POST purchase-orders:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Import massal: satu request = satu batch baris, disimpan dalam satu transaksi (semua atau tidak sama sekali)
+app.post('/api/purchase-orders/bulk', async (req, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+  if (!rows || rows.length === 0) {
+    return res.status(400).json({ success: false, message: 'rows kosong' });
+  }
+  if (rows.length > 2000) {
+    return res.status(400).json({ success: false, message: 'Maksimal 2000 baris per request' });
+  }
+
+  const valid = rows.filter((r) => r && r.po_number);
+  if (valid.length === 0) {
+    return res.status(400).json({ success: false, message: 'Tidak ada baris dengan po_number' });
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query(
+      `INSERT INTO purchase_orders (${PO_COLUMNS.join(', ')}) VALUES ?`,
+      [valid.map(poValues)]
+    );
+    await conn.commit();
+    return res.status(201).json({ success: true, inserted: valid.length, skipped: rows.length - valid.length });
+  } catch (error) {
+    await conn.rollback();
+    console.error('❌ Error bulk purchase-orders:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  } finally {
+    conn.release();
+  }
+});
+
+app.put('/api/purchase-orders/:id', async (req, res) => {
+  if (!req.body?.po_number) {
+    return res.status(400).json({ success: false, message: 'po_number wajib diisi' });
+  }
+  try {
+    const [result] = await pool.query(
+      `UPDATE purchase_orders SET ${PO_COLUMNS.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
+      [...poValues(req.body), req.params.id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'PO tidak ditemukan' });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error PUT purchase-orders:', error.message);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.delete('/api/purchase-orders/:id', async (req, res) => {
+  try {
+    const [result] = await pool.query('DELETE FROM purchase_orders WHERE id = ?', [req.params.id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'PO tidak ditemukan' });
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Error DELETE purchase-orders:', error.message);
     return res.status(500).json({ success: false, message: error.message });
   }
 });

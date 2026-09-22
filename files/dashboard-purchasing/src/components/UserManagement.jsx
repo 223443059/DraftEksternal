@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRole } from '../context/RoleContext';
+import { API_ENDPOINTS } from '../utils/api.config';
 
 // ✅ Path relatif — otomatis diteruskan ke backend lewat proxy Vite (/api -> 10.62.11.92:5000)
-const API_BASE = '/api/users';
+const API_BASE = API_ENDPOINTS.USERS;
 
 const ROLES = [
   { id: 1, name: 'Admin' },
@@ -101,11 +102,13 @@ export default function UserManagement({ changePage, onLogout, user: propUser })
 
   const canManage = hasPermission('manage_users');
 
-  const authHeaders = () => ({
+const authHeaders = () => {
+  const token = localStorage.getItem('token') || localStorage.getItem('authToken');
+  return {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${localStorage.getItem('token')}`,
-  });
-
+    ...(token && { Authorization: `Bearer ${token}` })
+  };
+};
   // ✅ FIX CORS: credentials: 'include' telah dihapus dari request fetch
   const fetchUsers = async () => {
     setLoading(true);
@@ -300,25 +303,25 @@ export default function UserManagement({ changePage, onLogout, user: propUser })
     try {
       console.log('🔄 Mengirim request delete ke backend...', { modules: selectedModules });
    
-      const res = await fetch('/api/system/clear-data', {
+      // Pakai host backend yang sama dengan API user (langsung ke :5000), bukan lewat proxy Vite
+      const backendOrigin = new URL(API_BASE, window.location.origin).origin;
+      const res = await fetch(`${backendOrigin}/api/system/clear-data`, {
         method: 'DELETE',
         headers: authHeaders(),
         body: JSON.stringify({ modules: selectedModules }), 
       });
    
-      const contentType = res.headers.get('content-type');
-      if (!contentType || !contentType.includes('application/json')) {
-        throw new Error('Endpoint backend belum dibuat atau URL server salah.');
-      }
-   
-      const data = await res.json();
-   
+      // Baca body apa adanya, lalu coba parse JSON (error 500 sering bukan JSON)
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch { /* bukan JSON */ }
+
       if (!res.ok) {
-        throw new Error(data.message || `HTTP Error: ${res.status}`);
+        throw new Error(data?.message || `HTTP ${res.status}: ${raw.slice(0, 120) || res.statusText}`);
       }
-      
-      if (!data.success) {
-        throw new Error(data.message || 'Gagal membersihkan data operasional');
+
+      if (!data?.success) {
+        throw new Error(data?.message || 'Gagal membersihkan data operasional');
       }
    
       // Menutup modal jika berhasil
