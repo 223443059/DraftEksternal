@@ -3,8 +3,6 @@ import { useRole } from '../context/RoleContext';
 import { API_ENDPOINTS } from '../utils/api.config';
 
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
-// Kurs IDR per 1 USD berdasarkan tahun transaksi (disamakan dengan PurchaseOrders.jsx & Dashboard.jsx)
-// Dipakai hanya sebagai fallback jika baris tidak punya Spending USD dari database.
 const KURS_PER_TAHUN = {
   2023: 15331,
   2024: 15926,
@@ -20,21 +18,9 @@ const getKurs = (year) => {
   return KURS_PER_TAHUN[nearest];
 };
 
-// Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
-// Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
-const saveOrdersCache = (rows) => {
-  try {
-    localStorage.setItem('dataPO_Ladeu', JSON.stringify(rows));
-  } catch (storageError) {
-    try { localStorage.removeItem('dataPO_Ladeu'); } catch { /* abaikan */ }
-    console.warn('Cache lokal PO tidak bisa disimpan (data terlalu besar), lanjut tanpa cache.');
-  }
-};
-
-// Baris API (snake_case, kolom tabel purchase_orders) atau cache halaman lain (camelCase)
-// -> bentuk objek yang dipakai Analytics
+// Baris API (snake_case, kolom tabel purchase_orders) atau camelCase
 const toOrder = (po, suppliersMap = {}) => {
-  const rawDate = po.receipt_date || po.receiptDate || po.order_date || po.date;
+  const rawDate = po.receipt_date || po.receiptDate || po.po_date || po.order_date || po.date;
   const usd = po.spending_usd ?? po.spendingUsd ?? po.totalUsd;
   return {
     id: po.id,
@@ -42,10 +28,9 @@ const toOrder = (po, suppliersMap = {}) => {
     date: rawDate ? String(rawDate).split('T')[0] : '-',
     supplier: po.supplier_name || po.supplier || suppliersMap[po.supplier_id] || '-',
     supplier_id: po.supplier_id,
-    totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0), // IDR
+    totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0),
     totalUsd: usd === undefined || usd === null ? null : Number(usd),
     status: po.status || po.order_status || 'Pending',
-    // Kategori dari Product Group (mis. "RM - Plastic"); 0/kosong = belum diklasifikasi
     category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Others',
     notes: po.description || po.notes || '',
     items: po.items || []
@@ -70,7 +55,6 @@ const formatShortNumber = (val) => {
 
 const getOrderTotal = (order) => {
   if (!order) return 0;
-  // Spending USD dari tabel sudah memakai kurs per tahun -> pakai langsung
   if (Number.isFinite(order.totalUsd) && order.totalUsd > 0) return order.totalUsd;
   const possibleKeys = [
     'total_amount', 'totalAmount', 'TotalAmount',
@@ -106,7 +90,6 @@ const getOrderTotal = (order) => {
     totalIDR = parseFloat(rawValue) || 0;
   }
 
-  // Konversi dari IDR ke USD memakai kurs sesuai tahun order (bukan kurs flat)
   const year = getOrderDate(order) ? new Date(getOrderDate(order)).getFullYear() : undefined;
   return totalIDR / getKurs(year);
 };
@@ -116,15 +99,13 @@ const getOrderCategory = (order) => order.category || order.kategori || order.ca
 const getOrderStatus = (order) => order.order_status || order.status || order.statusPesanan || order.orderStatus || '';
 const getOrderSupplier = (order) => order.supplier_name || order.supplier || order.namaSupplier || order.vendor || order.nama_supplier || 'Unknown Supplier';
 
-// Helper untuk mendapatkan tahun dari order
 const getYearFromOrder = (order) => {
   const dateStr = getOrderDate(order);
-  if (!dateStr) return null;
+  if (!dateStr || dateStr === '-') return null;
   const d = new Date(dateStr);
   return isNaN(d.getTime()) ? null : d.getFullYear();
 };
 
-// Precision SVG Curve Path Generator
 const generateSvgPath = (data, maxScale) => {
   if (!data || data.length === 0) return '';
   const points = data.map((val, idx) => {
@@ -140,7 +121,49 @@ const generateSvgPath = (data, maxScale) => {
   }, '');
 };
 
-// Smooth Line Path Generator
+const mapPercentToY = (val, min, max, top = 30, bottom = 200) => {
+  const range = (max - min) || 1;
+  return bottom - ((val - min) / range) * (bottom - top);
+};
+
+const formatShortDate = (d) => `${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })}`;
+const formatShortMonthYear = (d) => `${d.toLocaleString('en-US', { month: 'short' })} '${String(d.getFullYear()).slice(-2)}`;
+
+const buildPeriods = (start, end, granularity) => {
+  const periods = [];
+  if (granularity === 'day') {
+    let d = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+    while (d <= last) {
+      periods.push(new Date(d));
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    }
+  } else {
+    let d = new Date(start.getFullYear(), start.getMonth(), 1);
+    const last = new Date(end.getFullYear(), end.getMonth(), 1);
+    while (d <= last) {
+      periods.push(new Date(d));
+      d = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    }
+  }
+  return periods;
+};
+
+const sampleCumulativeAtPeriods = (sortedPoints, periods, granularity, baseline) => {
+  let ptr = 0;
+  let current = baseline;
+  return periods.map((periodDate) => {
+    const periodEnd = granularity === 'day'
+      ? new Date(periodDate.getFullYear(), periodDate.getMonth(), periodDate.getDate(), 23, 59, 59)
+      : new Date(periodDate.getFullYear(), periodDate.getMonth() + 1, 0, 23, 59, 59);
+    while (ptr < sortedPoints.length && sortedPoints[ptr].date <= periodEnd) {
+      current = sortedPoints[ptr].cumulative;
+      ptr++;
+    }
+    return current;
+  });
+};
+
 const generateSmoothSvgPath = (points) => {
   if (!points || points.length === 0) return '';
   return points.reduce((acc, point, i, a) => {
@@ -150,19 +173,12 @@ const generateSmoothSvgPath = (points) => {
   }, '');
 };
 
-// Rounded Top Bar Generator (SUDAH DIPERBAIKI)
 const generateRoundedBar = (x, y, w, h, r) => {
   if (h <= 0) return `M ${x},${y} h ${w} v 0 h -${w} Z`;
-  
-  // Proteksi: Jika tinggi batang lebih kecil dari radius, matikan radius agar SVG tidak meluber
   const radius = h < r ? 0 : Math.min(r, w / 2);
-  
-  // Jika radius 0, gambar kotak biasa (Rect)
   if (radius === 0) {
     return `M ${x},${y + h} L ${x},${y} L ${x + w},${y} L ${x + w},${y + h} Z`;
   }
-  
-  // Perbaikan bug Arc: Akhiri arc top-right di (y + radius), lalu sambung garis lurus ke bawah (y + h)
   return `M ${x},${y + h} L ${x},${y + radius} A ${radius},${radius} 0 0,1 ${x + radius},${y} L ${x + w - radius},${y} A ${radius},${radius} 0 0,1 ${x + w},${y + radius} L ${x + w},${y + h} Z`;
 };
 
@@ -170,7 +186,7 @@ export default function Analytics({ changePage, onLogout }) {
   const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
 
-  // === 1. STATE MANAGEMENT ===
+  // === 1. STATE MANAGEMENT (TANPA LOCALSTORAGE) ===
   const [orders, setOrders] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [suppliersMap, setSuppliersMap] = useState({});
@@ -178,39 +194,26 @@ export default function Analytics({ changePage, onLogout }) {
   const [currentTime, setCurrentTime] = useState(new Date());
   
   const [isAnalyticsMenuOpen, setIsAnalyticsMenuOpen] = useState(true);
-  // State untuk Filter Tahun Dinamis
   const [selectedYear, setSelectedYear] = useState('All');
   const profileRef = useRef(null);
   
-  // === 3. UI & PROFILE STATE ===
-  const [isDarkMode, setIsDarkMode] = useState(() => {
-    const savedTheme = localStorage.getItem('theme');
-    return savedTheme !== null ? savedTheme === 'dark' : false;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
-  }, [isDarkMode]);
-
-  // State untuk Supplier & Tab Baru
+  const [isDarkMode, setIsDarkMode] = useState(false);
   const [selectedSupplier, setSelectedSupplier] = useState('');
   const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const supplierSearchRef = useRef(null);
   const [activeTab, setActiveTab] = useState('overview');
 
-  // State untuk Compare Supplier
   const MAX_COMPARE_SUPPLIERS = 6;
   const COMPARE_SUPPLIER_COLORS = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#DB2777'];
   const [compareSuppliers, setCompareSuppliers] = useState([]);
   const [compareSupplierSearch, setCompareSupplierSearch] = useState('');
   const [showCompareDropdown, setShowCompareDropdown] = useState(false);
+  const [compareTimeRange, setCompareTimeRange] = useState('MAX');
   const compareSearchRef = useRef(null);
   
-  // State untuk Category Breakdown
   const [selectedCategory, setSelectedCategory] = useState(null);
 
-  // Tab Navigation yang sudah digabung
   const analyticsTabs = [
     { id: 'overview', label: 'Overview & Trend', icon: 'fa-chart-line' },
     { id: 'supplier', label: 'Supplier Analysis', icon: 'fa-users' },
@@ -218,7 +221,6 @@ export default function Analytics({ changePage, onLogout }) {
     { id: 'category', label: 'Category Breakdown', icon: 'fa-tags' },
   ];
 
-  // Clock Timer
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
@@ -234,8 +236,7 @@ export default function Analytics({ changePage, onLogout }) {
         role: user.role || (user.role_id === 1 ? 'Administrator' : 'User')
       };
     }
-    const savedProfile = localStorage.getItem('appProfile');
-    return savedProfile ? JSON.parse(savedProfile) : {
+    return {
       name: 'Admin',
       email: 'admin@detpak.com',
       role: 'Administrator'
@@ -254,7 +255,6 @@ export default function Analytics({ changePage, onLogout }) {
     }
   };
 
-  // Fetch Supplier list (Samakan dengan Dashboard)
   useEffect(() => {
     const fetchSuppliers = async () => {
       try {
@@ -277,20 +277,9 @@ export default function Analytics({ changePage, onLogout }) {
     fetchSuppliers();
   }, []);
 
-  // Load PO Data
   useEffect(() => {
-    const loadFromCache = () => {
-      try {
-        const savedPOs = localStorage.getItem('dataPO_Ladeu');
-        if (savedPOs) {
-          const parsedData = JSON.parse(savedPOs).map((po) => toOrder(po, suppliersMap));
-          setOrders(parsedData);
-          if (parsedData.length > 0) setSelectedSupplier(getOrderSupplier(parsedData[0]));
-        }
-      } catch (fallbackError) {}
-    };
-
     const fetchOrdersFromBackend = async () => {
+      setIsLoading(true);
       try {
         const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
@@ -299,14 +288,15 @@ export default function Analytics({ changePage, onLogout }) {
 
           setOrders(formattedOrders);
           if (formattedOrders.length > 0) {
-            saveOrdersCache(formattedOrders);
             setSelectedSupplier(getOrderSupplier(formattedOrders[0]));
           }
         } else {
-          loadFromCache();
+          console.error('Gagal mengambil data PO dari server, status:', response.status);
+          setOrders([]);
         }
       } catch (e) {
-        loadFromCache();
+        console.error('Gagal mengambil data PO dari server:', e);
+        setOrders([]);
       } finally {
         setIsLoading(false);
       }
@@ -343,9 +333,12 @@ export default function Analytics({ changePage, onLogout }) {
   const comparisonYears = useMemo(() => {
     let current = new Date().getFullYear(); 
     if (selectedYear !== 'All') {
-      current = parseInt(selectedYear);
-    } else if (availableYears.length > 1) {
-      current = availableYears[1]; 
+      current = parseInt(selectedYear, 10);
+    } else {
+      const numericYears = availableYears.filter((y) => y !== 'All').map(Number);
+      if (numericYears.length > 0) {
+        current = Math.max(...numericYears);
+      }
     }
     return { current, previous: current - 1 };
   }, [selectedYear, availableYears]);
@@ -413,7 +406,6 @@ export default function Analytics({ changePage, onLogout }) {
     setShowSupplierDropdown(false);
   };
 
-  // === COMPARE SUPPLIER: helpers & data ===
   const compareSupplierOptions = useMemo(() => {
     const q = compareSupplierSearch.trim().toLowerCase();
     return supplierList.filter((sup) => !compareSuppliers.includes(sup) && (!q || sup.toLowerCase().includes(q)));
@@ -470,6 +462,86 @@ export default function Analytics({ changePage, onLogout }) {
     return { months, rows, combinedTotal, maxSpend, maxMonthly };
   }, [orders, compareSuppliers, selectedYear]);
 
+  const compareGrowthChart = useMemo(() => {
+    const RANGE_DAYS = { '1D': 1, '5D': 5, '1M': 30, '6M': 182, '1Y': 365, '5Y': 365 * 5 };
+    const DAY_GRANULARITY_RANGES = ['1D', '5D', '1M'];
+
+    const perSupplier = compareSuppliers.map((sup, idx) => {
+      const dayMap = new Map();
+      orders.forEach((order) => {
+        if (getOrderSupplier(order) !== sup) return;
+        const yr = getYearFromOrder(order);
+        if (selectedYear !== 'All' && yr !== parseInt(selectedYear)) return;
+
+        const dateStr = getOrderDate(order);
+        if (!dateStr) return;
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return;
+
+        const key = d.toISOString().slice(0, 10);
+        const cost = getOrderTotal(order);
+        dayMap.set(key, (dayMap.get(key) || 0) + cost);
+      });
+
+      const sortedDays = Array.from(dayMap.entries())
+        .map(([key, cost]) => ({ date: new Date(key), cost }))
+        .sort((a, b) => a.date - b.date);
+
+      let running = 0;
+      const points = sortedDays.map((p) => {
+        running += p.cost;
+        return { date: p.date, cumulative: running };
+      });
+
+      return { name: sup, color: COMPARE_SUPPLIER_COLORS[idx % COMPARE_SUPPLIER_COLORS.length], points };
+    });
+
+    const allDates = perSupplier.flatMap((s) => s.points.map((p) => p.date));
+    if (allDates.length === 0) {
+      return { rows: [], labels: [], minNormalized: -10, maxNormalized: 10 };
+    }
+
+    const earliest = new Date(Math.min(...allDates.map((d) => d.getTime())));
+    const latest = new Date(Math.max(...allDates.map((d) => d.getTime())));
+    const granularity = DAY_GRANULARITY_RANGES.includes(compareTimeRange) ? 'day' : 'month';
+
+    let startDate;
+    if (compareTimeRange === 'MAX') {
+      startDate = earliest;
+    } else if (compareTimeRange === 'YTD') {
+      startDate = new Date(latest.getFullYear(), 0, 1);
+    } else {
+      const days = RANGE_DAYS[compareTimeRange] || 365;
+      startDate = new Date(latest.getTime() - days * 24 * 60 * 60 * 1000);
+    }
+    if (startDate < earliest) startDate = earliest;
+
+    const periods = buildPeriods(startDate, latest, granularity);
+
+    const rows = perSupplier.map((s) => {
+      let baseline = 0;
+      for (const p of s.points) {
+        if (p.date < startDate) baseline = p.cumulative; else break;
+      }
+
+      const values = sampleCumulativeAtPeriods(s.points, periods, granularity, baseline);
+      const normalized = values.map((v) => (baseline > 0 ? ((v - baseline) / baseline) * 100 : (v > 0 ? 100 : 0)));
+
+      return { name: s.name, color: s.color, normalized };
+    });
+
+    const allNormalized = rows.flatMap((r) => r.normalized);
+    const rawMax = allNormalized.length ? Math.max(...allNormalized) : 10;
+    const rawMin = allNormalized.length ? Math.min(...allNormalized) : -10;
+    const pad = Math.max((rawMax - rawMin) * 0.15, 5);
+    const maxNormalized = rawMax + pad;
+    const minNormalized = Math.min(rawMin - pad, 0);
+
+    const labels = periods.map((d) => (granularity === 'day' ? formatShortDate(d) : formatShortMonthYear(d)));
+
+    return { rows, labels, minNormalized, maxNormalized };
+  }, [orders, compareSuppliers, selectedYear, compareTimeRange]);
+
   const supplierAnalysisData = useMemo(() => {
     const totalsPrev = new Array(12).fill(0);
     const totalsCurrent = new Array(12).fill(0);
@@ -515,7 +587,6 @@ export default function Analytics({ changePage, onLogout }) {
       const cat = getOrderCategory(order);
       const costUSD = getOrderTotal(order);
 
-      // Satu PO bisa punya banyak baris (line) -> hitung jumlah PO unik, bukan jumlah baris
       if (!catMap[cat]) catMap[cat] = { totalCost: 0, poSet: new Set() };
       catMap[cat].totalCost += costUSD;
       catMap[cat].poSet.add(order.poNumber || `row-${order.id}`);
@@ -531,7 +602,6 @@ export default function Analytics({ changePage, onLogout }) {
     });
   }, [orders, selectedYear]);
 
-  // === LOGIKA DATA BREAKDOWN KATEGORI ===
   const categoryBreakdownData = useMemo(() => {
     if (!selectedCategory) return [];
     
@@ -542,11 +612,9 @@ export default function Analytics({ changePage, onLogout }) {
       return isYearMatch && isCategoryMatch;
     });
   }, [orders, selectedCategory, selectedYear]);
-
   return (
     <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
 
-      {/* TOP LOADING BAR (muncul selama data Purchase Orders masih di-fetch dari backend) */}
       {isLoading && (
         <>
           <style>{`
@@ -564,19 +632,19 @@ export default function Analytics({ changePage, onLogout }) {
         </>
       )}
 
-      {/* HEADER UTAMA */}
+      {/* HEADER */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
           <div className="flex items-center gap-10 h-full">
-              <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-                <img src="/images/logo.png" alt="Detpak Logo" className="h-12 w-auto object-contain" />
-              </div>              
+            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
+              <img src="/images/logo.png" alt="Detpak Logo" className="h-12 w-auto object-contain" />
+            </div>              
             <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
               <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
               <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
               <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
               <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-           </nav>
+            </nav>
           </div>
 
           <div className="flex items-center gap-6">
@@ -633,15 +701,12 @@ export default function Analytics({ changePage, onLogout }) {
         </div>
       </header>
       
-      {/* BODY CONTAINER */}
+      {/* BODY */}
       <div className="flex flex-1 overflow-hidden">
         
         {/* SIDEBAR */}
-{/* SIDEBAR */}
         <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
           <nav className="flex flex-col gap-2 px-4">
-            
-            {/* Navigasi Standard */}
             <button onClick={() => handleNavigate('dashboard')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
             </button>
@@ -652,7 +717,6 @@ export default function Analytics({ changePage, onLogout }) {
               <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
             </button>
             
-            {/* PARENT: Analytics */}
             <div>
               <button 
                 onClick={() => setIsAnalyticsMenuOpen((prev) => !prev)} 
@@ -664,7 +728,6 @@ export default function Analytics({ changePage, onLogout }) {
                 <i className={`fa-solid fa-chevron-${isAnalyticsMenuOpen ? 'down' : 'right'} text-xs transition-transform duration-200`}></i>
               </button>
 
-              {/* CHILD: Analytics Sub-menus */}
               {isAnalyticsMenuOpen && (
                 <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
                   {analyticsTabs.map((tab) => (
@@ -684,7 +747,6 @@ export default function Analytics({ changePage, onLogout }) {
               )}
             </div>
             
-            {/* Menu Lainnya */}
             <button onClick={() => handleNavigate('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm font-medium rounded-xl transition-colors text-left cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`}>
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
@@ -699,7 +761,8 @@ export default function Analytics({ changePage, onLogout }) {
             )}
           </nav>
         </aside>
-        {/* MAIN CONTENT AREA */}
+
+        {/* MAIN CONTENT */}
         <main className="flex-1 overflow-y-auto p-8 space-y-6">
           <div className="flex justify-between items-center">
             <div>
@@ -796,7 +859,7 @@ export default function Analytics({ changePage, onLogout }) {
             </div>
           )}
 
-          {/* SUPPLIER ANALYSIS (YoY) */}
+          {/* SUPPLIER ANALYSIS */}
           {activeTab === 'supplier' && (
           <div className={`p-6 rounded-2xl border shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
             <div>
@@ -884,9 +947,6 @@ export default function Analytics({ changePage, onLogout }) {
                            <stop offset="0%" stopColor="#F87171" stopOpacity="1"/>
                            <stop offset="100%" stopColor="#DC2626" stopOpacity="1"/>
                         </linearGradient>
-                        <filter id="lineShadow" x="-10%" y="-10%" width="120%" height="120%">
-                           <feDropShadow dx="0" dy="4" stdDeviation="3" floodColor="#000000" floodOpacity="0.15"/>
-                        </filter>
                      </defs>
 
                      {[100, 75, 50, 25, 0].map((pct, i) => {
@@ -900,14 +960,6 @@ export default function Analytics({ changePage, onLogout }) {
                            </g>
                         );
                      })}
-                     <text x="50" y="15" textAnchor="end" className={`text-[10px] font-bold ${isDarkMode ? 'fill-slate-200' : 'fill-gray-800'}`}>Spend ($)</text>
-
-                     {[150, 100, 50, 0, -50].map((pct, i) => (
-                         <text key={`pct-${i}`} x="950" y={30 + i * 50 + 4} textAnchor="start" className={`text-[10px] ${isDarkMode ? 'fill-amber-500' : 'fill-amber-600'}`}>{pct}%</text>
-                     ))}
-                     <text x="950" y="15" textAnchor="start" className={`text-[10px] font-bold ${isDarkMode ? 'fill-amber-400' : 'fill-amber-600'}`}>% YoY Change</text>
-
-                     <line x1="60" y1="180" x2="940" y2="180" stroke={isDarkMode ? '#475569' : '#D1D5DB'} strokeWidth="1.5" strokeDasharray="6 4" />
 
                      {supplierAnalysisData.months.map((m, idx) => {
                         const xCenter = 60 + (idx * (880 / 11));
@@ -915,8 +967,6 @@ export default function Analytics({ changePage, onLogout }) {
                         const hCurr = isNaN((supplierAnalysisData.totalsCurrent[idx] / supplierAnalysisData.maxSpend) * 200) ? 0 : (supplierAnalysisData.totalsCurrent[idx] / supplierAnalysisData.maxSpend) * 200;
                         const yPrev = 230 - hPrev, yCurr = 230 - hCurr, barWidth = 20, gap = 4;
                         let xPrev = xCenter - barWidth - (gap / 2), xCurr = xCenter + (gap / 2);
-                        if (hPrev > 0 && hCurr === 0) { xPrev = xCenter - (barWidth / 2); xCurr = xCenter; } 
-                        else if (hPrev === 0 && hCurr > 0) { xPrev = xCenter; xCurr = xCenter - (barWidth / 2); }
 
                         return (
                            <g key={`bars-${idx}`}>
@@ -926,25 +976,6 @@ export default function Analytics({ changePage, onLogout }) {
                            </g>
                         );
                      })}
-
-                     {(() => {
-                        const linePoints = supplierAnalysisData.months.map((m, idx) => {
-                           let yoy = supplierAnalysisData.monthlyYoy[idx];
-                           if (yoy > 150) yoy = 150; if (yoy < -50) yoy = -50;
-                           return { x: 60 + (idx * (880 / 11)), y: 230 - (yoy + 50), yoyRaw: supplierAnalysisData.monthlyYoy[idx] };
-                        });
-                        return (
-                           <g>
-                              <path d={generateSmoothSvgPath(linePoints)} fill="none" stroke="#F59E0B" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" filter="url(#lineShadow)" />
-                              {linePoints.map((pt, idx) => (
-                                 <g key={`dot-${idx}`}>
-                                    <circle cx={pt.x} cy={pt.y} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#F59E0B" strokeWidth="2.5" />
-                                    {pt.yoyRaw !== 0 && !isNaN(pt.yoyRaw) && <text x={pt.x} y={pt.y - 14} textAnchor="middle" className={`text-[10px] font-bold ${isDarkMode ? 'fill-amber-400' : 'fill-amber-600'}`}>{pt.yoyRaw > 0 ? '+' : ''}{pt.yoyRaw.toFixed(0)}%</text>}
-                                 </g>
-                              ))}
-                           </g>
-                        );
-                     })()}
                   </svg>
                </div>
             </div>
@@ -955,7 +986,6 @@ export default function Analytics({ changePage, onLogout }) {
           {activeTab === 'category' && (
           <div className="grid grid-cols-1 gap-6">
             <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              
               {!selectedCategory ? (
                 <>
                   <div className="flex items-center justify-between mb-4">
@@ -1061,7 +1091,6 @@ export default function Analytics({ changePage, onLogout }) {
               </p>
             </div>
 
-            {/* PICKER */}
             <div className="max-w-md relative" ref={compareSearchRef}>
               <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Tambah Supplier</label>
               <div className="relative">
@@ -1097,7 +1126,6 @@ export default function Analytics({ changePage, onLogout }) {
               )}
             </div>
 
-            {/* SELECTED PILLS */}
             {compareSupplierData.rows.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {compareSupplierData.rows.map((row) => (
@@ -1124,7 +1152,6 @@ export default function Analytics({ changePage, onLogout }) {
               </div>
             ) : (
               <>
-                {/* SUMMARY TABLE */}
                 <div className="overflow-x-auto rounded-lg border border-gray-200/60 dark:border-slate-700">
                   <table className={`w-full text-left text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
                     <thead className={`text-xs uppercase bg-gray-50 dark:bg-slate-800/50 border-b ${isDarkMode ? 'border-slate-700 text-slate-400' : 'border-gray-200 text-gray-500'}`}>
@@ -1157,7 +1184,6 @@ export default function Analytics({ changePage, onLogout }) {
                   </table>
                 </div>
 
-                {/* TOTAL SPEND BAR COMPARISON */}
                 <div>
                   <h4 className={`font-bold text-sm mb-4 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Spend Comparison</h4>
                   <div className="space-y-3">
@@ -1178,51 +1204,117 @@ export default function Analytics({ changePage, onLogout }) {
                   </div>
                 </div>
 
-                {/* MONTHLY TREND MULTI-LINE CHART */}
-                <div>
-                  <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3">
-                    <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>
-                      Monthly Trend {selectedYear === 'All' ? '(All Time, gabungan per bulan)' : `(${selectedYear})`}
-                    </h4>
-                    <div className="flex flex-wrap items-center gap-3 text-[11px] font-semibold">
+                <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'border-slate-800 bg-[#1E293B]' : 'border-gray-200 bg-white'}`}>
+                  <div className="p-5 pb-4">
+                    <div className="flex flex-wrap items-center gap-2 mb-6">
                       {compareSupplierData.rows.map((row) => (
-                        <div key={row.name} className="flex items-center gap-1.5" style={{ color: row.color }}>
-                          <span className="w-3 h-3 rounded" style={{ backgroundColor: row.color }}></span>{row.name}
-                        </div>
+                        <span
+                          key={row.name}
+                          className={`inline-flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-full text-sm font-semibold border ${isDarkMode ? 'bg-transparent border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-800'}`}
+                        >
+                          <span className="w-3 h-3 rounded-[3px] shrink-0" style={{ backgroundColor: row.color }}></span>
+                          {row.name}
+                          <button
+                            onClick={() => handleRemoveCompareSupplier(row.name)}
+                            className={`ml-0.5 flex items-center justify-center text-sm cursor-pointer transition-colors ${isDarkMode ? 'text-slate-500 hover:text-slate-300' : 'text-gray-400 hover:text-gray-600'}`}
+                          >
+                            <i className="fa-solid fa-xmark"></i>
+                          </button>
+                        </span>
                       ))}
                     </div>
+
+                    <div className="w-full h-64 relative">
+                      {compareGrowthChart.labels.length === 0 ? (
+                        <div className={`h-full flex items-center justify-center text-sm text-center px-6 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                          Belum ada data order pada rentang waktu ini.
+                        </div>
+                      ) : (
+                      <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
+                        {[0, 1, 2, 3].map((step) => {
+                          const x = 40 + step * (920 / 3);
+                          return (
+                            <line key={`v-${step}`} x1={x} y1="20" x2={x} y2="195" stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeWidth="1" />
+                          );
+                        })}
+
+                        {[0, 1, 2, 3, 4].map((step) => {
+                          const y = 25 + step * 42.5;
+                          const gridVal = compareGrowthChart.maxNormalized - (step * (compareGrowthChart.maxNormalized - compareGrowthChart.minNormalized)) / 4;
+                          const isZeroLine = Math.abs(gridVal) < ((compareGrowthChart.maxNormalized - compareGrowthChart.minNormalized) / 8);
+                          return (
+                            <g key={step}>
+                              {isZeroLine && (
+                                <line x1="40" y1={y} x2="960" y2={y} stroke={isDarkMode ? '#64748B' : '#9CA3AF'} strokeDasharray="2 4" strokeWidth="1.5" strokeLinecap="round" />
+                              )}
+                              <text x="32" y={y + 4} textAnchor="end" className={`text-[11px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>
+                                {gridVal.toFixed(0)}%
+                              </text>
+                            </g>
+                          );
+                        })}
+
+                        {compareGrowthChart.rows.map((row) => {
+                          const n = row.normalized.length;
+                          const points = row.normalized.map((val, idx) => ({
+                            x: n > 1 ? (idx / (n - 1)) * 920 + 40 : 500,
+                            y: mapPercentToY(val, compareGrowthChart.minNormalized, compareGrowthChart.maxNormalized, 25, 195)
+                          }));
+                          return (
+                            <path
+                              key={row.name}
+                              d={generateSmoothSvgPath(points)}
+                              fill="none"
+                              stroke={row.color}
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          );
+                        })}
+
+                        {compareGrowthChart.rows.map((row) => {
+                          const n = row.normalized.length;
+                          const lastIdx = n - 1;
+                          const x = n > 1 ? (lastIdx / (n - 1)) * 920 + 40 : 500;
+                          const y = mapPercentToY(row.normalized[lastIdx], compareGrowthChart.minNormalized, compareGrowthChart.maxNormalized, 25, 195);
+                          return (
+                            <circle
+                              key={`${row.name}-dot`}
+                              cx={x} cy={y} r="5"
+                              fill={row.color}
+                            />
+                          );
+                        })}
+
+                        {compareGrowthChart.labels.map((label, idx, arr) => {
+                          const step = Math.max(1, Math.ceil(arr.length / 6));
+                          if (idx % step !== 0 && idx !== arr.length - 1) return null;
+                          const x = arr.length > 1 ? (idx / (arr.length - 1)) * 920 + 40 : 500;
+                          return (
+                            <text key={idx} x={x} y="218" textAnchor="middle" className={`text-[11px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>{label}</text>
+                          );
+                        })}
+                      </svg>
+                      )}
+                    </div>
                   </div>
-                  <div className="w-full h-64 relative">
-                    <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
-                      {[4, 3, 2, 1, 0].map((step, i) => {
-                        const y = 30 + i * 40;
-                        const gridVal = (compareSupplierData.maxMonthly * step) / 4;
-                        return (
-                          <g key={i}>
-                            <line x1="40" y1={y} x2="960" y2={y} stroke={isDarkMode ? '#334155' : '#F3F4F6'} strokeDasharray="4 4" />
-                            <text x="30" y={y + 4} textAnchor="end" className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>
-                              {formatShortNumber(gridVal)}
-                            </text>
-                          </g>
-                        );
-                      })}
-                      {compareSupplierData.rows.map((row) => (
-                        <path
-                          key={row.name}
-                          d={generateSvgPath(row.monthly, compareSupplierData.maxMonthly)}
-                          fill="none"
-                          stroke={row.color}
-                          strokeWidth="2.5"
-                          strokeLinecap="round"
-                        />
-                      ))}
-                      {compareSupplierData.months.map((m, idx) => {
-                        const x = (idx / 11) * 920 + 40;
-                        return (
-                          <text key={idx} x={x} y="222" textAnchor="middle" className={`text-[11px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{m}</text>
-                        );
-                      })}
-                    </svg>
+
+                  <div className={`flex flex-wrap items-center gap-1 px-4 py-3 border-t ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+                    {['1D', '5D', '1M', '6M', 'YTD', '1Y', '5Y', 'MAX'].map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        onClick={() => setCompareTimeRange(r)}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          compareTimeRange === r
+                            ? (isDarkMode ? 'bg-slate-700 text-white' : 'bg-gray-100 text-gray-900')
+                            : (isDarkMode ? 'text-slate-400 hover:text-slate-200' : 'text-gray-500 hover:text-gray-800')
+                        }`}
+                      >
+                        {r}
+                      </button>
+                    ))}
                   </div>
                 </div>
               </>

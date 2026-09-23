@@ -20,17 +20,6 @@ const getKurs = (year) => {
   return KURS_PER_TAHUN[nearest];
 };
 
-// Cache lokal hanya pelengkap: data PO ribuan baris bisa melewati kuota localStorage (~5 MB).
-// Kalau gagal disimpan, cache lama dibuang agar tidak dipakai sebagai data basi.
-const saveOrdersCache = (rows) => {
-  try {
-    localStorage.setItem('dataPO_Ladeu', JSON.stringify(rows));
-  } catch (storageError) {
-    try { localStorage.removeItem('dataPO_Ladeu'); } catch { /* abaikan */ }
-    console.warn('Cache lokal PO tidak bisa disimpan (data terlalu besar), lanjut tanpa cache.');
-  }
-};
-
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
@@ -39,6 +28,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [supplierParetoTab, setSupplierParetoTab] = useState('top20');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showPendingModal, setShowPendingModal] = useState(false);
+  const [pendingModalReady, setPendingModalReady] = useState(false);
   const [selectedYear, setSelectedYear] = useState('All'); 
 
   // User and permission from RoleContext
@@ -99,8 +89,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   // Fetch Purchase Orders
   useEffect(() => {
-    // Baris API (snake_case, kolom tabel purchase_orders) atau cache PurchaseOrders.jsx (camelCase)
-    // -> bentuk objek yang dipakai Dashboard
     const toOrder = (po) => {
       const rawDate = po.receipt_date || po.receiptDate || po.po_date || po.order_date || po.date;
       const usd = po.spending_usd ?? po.spendingUsd ?? po.totalUsd;
@@ -113,7 +101,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         totalCost: Number(po.spending_idr ?? po.spendingIdr ?? po.total_amount ?? po.totalCost ?? 0),
         totalUsd: usd === undefined || usd === null ? null : Number(usd),
         status: po.status || po.order_status || 'Pending',
-        // Kategori dari Product Group (mis. "RM - Plastic", "SP - Spare Parts"); 0/kosong = belum diklasifikasi
         category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Other',
         origin: po.local_import || po.localImport || po.origin || '',
         notes: po.description || po.notes || '',
@@ -123,45 +110,40 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       };
     };
 
-    const loadFromLocalCache = () => {
-      try {
-        const cached = localStorage.getItem('dataPO_Ladeu');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setOrders(parsed.map(toOrder));
-          }
-        }
-      } catch (e) {
-        console.error('Failed to read PO cache from localStorage:', e);
-      }
-    };
-
     const fetchOrdersFromBackend = async () => {
+      setIsLoading(true);
       try {
         const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
           const formattedOrders = data.map(toOrder);
           setOrders(formattedOrders);
-          
-          if (formattedOrders.length > 0) {
-            saveOrdersCache(formattedOrders);
-          }
         } else {
-          loadFromLocalCache();
+          console.error('Gagal mengambil data PO dari server, status:', response.status);
+          setOrders([]);
         }
       } catch (e) {
         console.error('Failed to fetch Purchase Orders from database:', e);
-        loadFromLocalCache();
+        setOrders([]);
       } finally {
         setIsLoading(false);
       }
     };
 
-    loadFromLocalCache();
     fetchOrdersFromBackend();
   }, [suppliersMap]);
+
+  // Modal Pending Payment: begitu dibuka, tampilkan garis loading dulu selama 1 frame
+  // sebelum me-render list (yang bisa ribuan baris), supaya klik terasa instan/cepat
+  // dan browser tidak sempat "freeze" saat merender semuanya sekaligus.
+  useEffect(() => {
+    if (showPendingModal) {
+      setPendingModalReady(false);
+      const t = setTimeout(() => setPendingModalReady(true), 30);
+      return () => clearTimeout(t);
+    }
+    setPendingModalReady(false);
+  }, [showPendingModal]);
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -179,12 +161,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   // === 2. DATA HELPER GETTERS ===
-  // Mengembalikan total order dalam USD (bukan IDR mentah).
-  // Prioritas: kolom spending_usd dari database (sudah dihitung per kurs tahun transaksi).
-  // Fallback: konversi total IDR memakai kurs sesuai tahun order (KURS_PER_TAHUN), bukan kurs flat.
   const getOrderTotal = (order) => {
     if (!order) return 0;
-
     if (Number.isFinite(order.totalUsd) && order.totalUsd > 0) return order.totalUsd;
 
     const possibleKeys = [
@@ -226,7 +204,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const getOrderDate = (order) => order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '-';
   const getOrderCategory = (order) => order.category || order.kategori || order.categoryName || 'Other';
-  // Nama item = kolom Description di halaman Purchase Orders (kalau kosong: Part)
   const getOrderItemName = (order) => {
     const desc = String(order.description || order.notes || '').replace(/\s+/g, ' ').trim();
     if (desc) return desc;
@@ -251,8 +228,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   // === USD FORMATTER HELPERS ===
-  // Catatan: input sekarang sudah dalam USD (getOrderTotal sudah mengonversi per kurs tahun transaksi),
-  // jadi fungsi ini hanya memformat, tidak membagi kurs lagi.
   const formatUSD = (amountInUSD) => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -327,7 +302,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     let maxVal = 0;
 
     if (!barChartGroup) {
-      // Group spend into Direct and Indirect
       yearFilteredOrders.forEach((order) => {
         const normCat = normalizeCategory(getOrderCategory(order));
         const parentCat = getParentCategory(normCat);
@@ -368,7 +342,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         value: catMap[catName]
       }));
     
-    // Floor kecil hanya untuk jaga-jaga saat data kosong/kecil, bukan skala IDR lama.
     const currentMax = categories.length > 0 ? categories[0].value : 1;
     maxVal = Math.max(currentMax, 1);
 
@@ -714,7 +687,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       </div>
     );
   };
-
   const filteredTotalCost = useMemo(() => {
     return yearFilteredOrders.reduce((sum, o) => sum + getOrderTotal(o), 0);
   }, [yearFilteredOrders]);
@@ -754,21 +726,22 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const monthlyStats = useMemo(() => {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const monthlyTotals = new Array(12).fill(0);
+    // null = belum ada data sama sekali untuk bulan itu (garis akan putus di sini)
+    const monthlyTotals = new Array(12).fill(null);
 
     yearFilteredOrders.forEach((order) => {
       const rawDate = getOrderDate(order);
       if (rawDate && rawDate !== '-') {
         const d = new Date(rawDate);
         if (!isNaN(d.getTime())) {
-          monthlyTotals[d.getMonth()] += getOrderTotal(order);
+          const m = d.getMonth();
+          monthlyTotals[m] = (monthlyTotals[m] || 0) + getOrderTotal(order);
         }
       }
     });
 
-    // Floor kecil hanya untuk jaga-jaga pembagian dengan nol saat data kosong,
-    // BUKAN nilai skala tetap — skala grafik harus mengikuti data USD aktual.
-    const maxVal = Math.max(...monthlyTotals, 1);
+    const validValues = monthlyTotals.filter((v) => v !== null);
+    const maxVal = Math.max(...validValues, 1);
     return { months, monthlyTotals, maxVal };
   }, [yearFilteredOrders]);
 
@@ -793,12 +766,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     if (supplierParetoTab === 'lowest20') {
       selected = sortedDesc.slice(-20);
     } else {
-      const top20 = sortedDesc.slice(0, 20);
-      const otherCost = sortedDesc.slice(20).reduce((acc, curr) => acc + curr.totalCost, 0);
-      selected = [...top20];
-      if (otherCost > 0) {
-        selected.push({ name: 'Others (Rest)', totalCost: otherCost });
-      }
+      selected = sortedDesc.slice(0, 20);
     }
 
     let runningSum = 0;
@@ -826,14 +794,28 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     if (!data || data.length === 0) return '';
     const points = data.map((val, idx) => {
       const x = (idx / (data.length - 1)) * (width - 60) + 40;
-      const y = height - 30 - (val / maxScale) * (height - 60);
+      const y = (val === null || val === undefined) ? null : height - 30 - (val / maxScale) * (height - 60);
       return { x, y };
     });
-    return points.reduce((acc, point, i, a) => {
-      if (i === 0) return `M ${point.x},${point.y}`;
-      const cpsX = (point.x + a[i - 1].x) / 2;
-      return `${acc} C ${cpsX},${a[i - 1].y} ${cpsX},${point.y} ${point.x},${point.y}`;
-    }, '');
+
+    let path = '';
+    let segmentOpen = false;
+    points.forEach((point, i) => {
+      if (point.y === null) {
+        // Belum ada data di bulan ini -> putuskan garis, mulai segmen baru setelah ini
+        segmentOpen = false;
+        return;
+      }
+      if (!segmentOpen) {
+        path += ` M ${point.x},${point.y}`;
+        segmentOpen = true;
+      } else {
+        const prev = points[i - 1];
+        const cpsX = (point.x + prev.x) / 2;
+        path += ` C ${cpsX},${prev.y} ${cpsX},${point.y} ${point.x},${point.y}`;
+      }
+    });
+    return path.trim();
   };
 
   const getStatusBadgeClass = (status) => {
@@ -935,7 +917,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           name: originName,
           value: cost,
           percentage: parseFloat(percentage),
-          color: originName === 'Import' ? '#A855F7' : '#10B981' // Purple for Import, Emerald for Local
+          color: originName === 'Import' ? '#A855F7' : '#10B981'
         };
       });
 
@@ -943,7 +925,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   }, [yearFilteredOrders]);
 
 
-  // === FUNGSI HELPER UNTUK MENGGAMBAR SVG PIE CHART (Bisa dipakai ulang) ===
+  // === FUNGSI HELPER UNTUK MENGGAMBAR SVG PIE CHART ===
   const renderGenericPieChart = (data, totalValue, onSliceClick = null, isClickable = false) => {
     if (!data || data.length === 0 || totalValue === 0) {
       return (
@@ -1001,11 +983,28 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         ...cat,
         pathData,
         lx1, ly1, lx2, ly2, lx3, ly3,
-        textX: lx3 + (isRight ? 6 : -6),
-        textY: ly3 + 4,
         textAnchor: isRight ? 'start' : 'end',
-        showLabel: index < maxLabels && sliceAngle > 5 
+        isRight,
+        showLabel: index < maxLabels && sliceAngle > 5
       };
+    });
+
+    // Anti-tabrakan label: kelompokkan per sisi (kiri/kanan), urutkan berdasarkan
+    // posisi vertikal, lalu paksa jarak minimum antar label supaya tidak numpuk.
+    const minLabelGap = 16;
+    ['right', 'left'].forEach((side) => {
+      const group = slices
+        .filter((s) => s.showLabel && (side === 'right' ? s.isRight : !s.isRight))
+        .sort((a, b) => a.ly3 - b.ly3);
+      for (let i = 1; i < group.length; i++) {
+        const minY = group[i - 1].ly3 + minLabelGap;
+        if (group[i].ly3 < minY) group[i].ly3 = minY;
+      }
+    });
+
+    slices.forEach((s) => {
+      s.textX = s.lx3 + (s.isRight ? 6 : -6);
+      s.textY = s.ly3 + 4;
     });
 
     return (
@@ -1075,7 +1074,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     return (
       <div className="w-full flex flex-col">
-        {/* NAVIGASI BREADCRUMB (MAX LEVEL 1) */}
         <div className={`flex items-center gap-2 mb-2 mt-2 text-xs font-semibold p-2 rounded-lg border self-start ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
           <button 
             onClick={() => { setDrillLevel(0); setSelectedGroup(null); }}
@@ -1158,6 +1156,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       </div>
     );
   };
+
   const renderSupplierParetoChart = () => {
     const { items } = paretoSupplierData;
 
@@ -1528,7 +1527,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                       <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
                         <td className="py-2 px-3 font-semibold truncate max-w-[260px]" title={item.name}>
                           {item.name}
-                        </td>
+                
+                </td>
                         <td className="py-2 px-2 text-right font-medium">
                           {formatShortUSD(item.totalCost)}
                         </td>
@@ -1562,13 +1562,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     { id: 'overview', label: 'Overview', icon: 'fa-gauge-high' },
     { id: 'category', label: 'Category', icon: 'fa-chart-pie' },
     { id: 'supplier', label: 'Supplier', icon: 'fa-users' },
-    { id: 'transactions', label: 'Transactions', icon: 'fa-table-list' },
   ];
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#F0F7FD] text-gray-800'}`}>
 
-      {/* TOP LOADING BAR (muncul selama data Purchase Orders masih di-fetch dari backend) */}
       {isLoading && (
         <>
           <style>{`
@@ -1589,20 +1587,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       {/* MAIN HEADER */}
       <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
         <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img 
-                src="/images/logo.png" 
-                alt="Detpak Logo" 
-                className="h-12 w-auto object-contain" 
-              />
-            </div>            
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
-              <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
-              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-            </nav>
+          <div className="flex flex-col justify-center">
+            <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+              Detmold Packaging
+            </h2>
+            <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
+              Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
+            </p>
           </div>
 
           <div className="flex items-center gap-6">
@@ -1650,13 +1641,22 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           </div>
         </div>
 
-        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
-          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Packaging
-          </h2>
-          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-          </p>
+        <div className="flex items-center px-6 h-20">
+          <div className="flex items-center gap-10 h-full">
+            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
+              <img 
+                src="/images/logo.png" 
+                alt="Detpak Logo" 
+                className="h-12 w-auto object-contain" 
+              />
+            </div>            
+            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
+              <button onClick={() => changePage?.('dashboard')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
+              <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
+              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
+              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
+            </nav>
+          </div>
         </div>
       </header>
       
@@ -1668,8 +1668,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
         }`}>
           <nav className="flex flex-col gap-2 px-4">
-            
-            {/* PARENT: Dashboard */}
             <div>
               <button 
                 onClick={() => {
@@ -1694,7 +1692,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                 <i className={`fa-solid fa-chevron-${isDashboardMenuOpen ? 'down' : 'right'} text-xs transition-transform`}></i>
               </button>
 
-              {/* CHILD: Dashboard Sub-menus */}
               {activePage === 'dashboard' && isDashboardMenuOpen && (
                 <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
                   {dashboardTabs.map((tab) => (
@@ -1714,20 +1711,19 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               )}
             </div>
 
-            {/* Menu Lainnya */}
-            <button onClick={() => changePage && changePage('suppliers')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'suppliers' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
+            <button onClick={() => changePage && changePage('suppliers')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'suppliers' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
             </button>
-            <button onClick={() => changePage && changePage('purchaseOrders')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'purchaseOrders' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
+            <button onClick={() => changePage && changePage('purchaseOrders')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'purchaseOrders' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
             </button>
-            <button onClick={() => changePage && changePage('analytics')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'analytics' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
+            <button onClick={() => changePage && changePage('analytics')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'analytics' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
             </button>
-            <button onClick={() => changePage && changePage('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'report' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
+            <button onClick={() => changePage && changePage('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'report' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
             </button>
-            <button onClick={() => changePage && changePage('settings')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'settings' ? 'bg-[#E31837] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
+            <button onClick={() => changePage && changePage('settings')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'settings' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
               <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
             </button>
 
@@ -1736,7 +1732,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                 onClick={() => changePage && changePage('userManagement')}
                 className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
                   activePage === 'userManagement' 
-                    ? 'bg-[#E31837] text-white font-bold' 
+                    ? 'bg-[#004797] text-white font-bold' 
                     : isDarkMode
                       ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
                       : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
@@ -1750,10 +1746,49 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
         {/* MAIN CONTENT */}
         <main className="flex-1 overflow-y-auto p-8 space-y-6">
-          <div>
-            <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Dashboard Overview</h1>
-            <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Expenditure analysis and order origin monitoring (Local vs Import).</p>
+          
+          {/* WELCOME BANNER: hanya tampil di tab Overview, pakai font Poppins */}
+          {activeTab === 'overview' && (
+          <div className="relative overflow-hidden rounded-2xl shadow-xs bg-[#00306B] min-h-[240px]" style={{ fontFamily: "'Poppins', sans-serif" }}>
+            {/* Foto Detpak: background-image + cover, dijamin selalu menutup penuh kotaknya tanpa celah/garis nyempil */}
+            <div
+              className="hidden sm:block absolute inset-0 pointer-events-none"
+              style={{
+                backgroundImage: "url('/images/bg5.jpeg')",
+                backgroundSize: 'cover',
+                backgroundPosition: 'right 0px bottom -14px',
+                backgroundRepeat: 'no-repeat',
+              }}
+            ></div>
+            {/* Overlay gradasi biru: Pekat di kiri untuk teks, melebur mulus ke gambar di kanan */}
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{ background: 'linear-gradient(90deg, rgba(0,32,74,0.98) 0%, rgba(0,71,151,0.85) 35%, rgba(0,71,151,0.4) 60%, rgba(0,71,151,0) 85%)' }}
+            ></div>
+
+            <div className="relative z-10 p-7">
+              <p className="text-blue-200 text-sm font-normal mb-0.5 tracking-wide">Welcome to</p>
+              <h2 className="text-blue-50 text-2xl sm:text-[28px] font-medium mb-1.5 leading-tight tracking-normal">Detmold Smart Procurement Portal</h2>
+              <p className="text-blue-100/90 text-sm font-light mb-5 tracking-wide">Digital. Efficient. Compliant. Sustainable.</p>
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+                {[
+                  { icon: 'fa-leaf', label: 'Right Materials\nRight People' },
+                  { icon: 'fa-gear', label: 'Smarter Process\nHigher Productivity' },
+                  { icon: 'fa-people-group', label: 'Stronger Partnerships\nGreater Value' },
+                  { icon: 'fa-seedling', label: 'Sustainable\nFuture' },
+                ].map((f, i, arr) => (
+                  <React.Fragment key={f.label}>
+                    <div className="flex items-center gap-2.5">
+                      <i className={`fa-solid ${f.icon} text-blue-50 text-xl w-5 text-center shrink-0`}></i>
+                      <span className="text-blue-50 text-xs font-normal leading-snug whitespace-pre-line tracking-wide">{f.label}</span>
+                    </div>
+                    {i < arr.length - 1 && <div className="hidden sm:block w-px h-8 bg-white/25"></div>}
+                  </React.Fragment>
+                ))}
+              </div>
+            </div>
           </div>
+          )}
 
           {activeTab === 'overview' && (
             <>
@@ -1762,13 +1797,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0 font-bold">
                     $
                   </div>
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
+                      <p className={`text-xs font-semibold uppercase tracking-wider shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
                       <select 
                         value={selectedYear}
                         onChange={(e) => setSelectedYear(e.target.value)}
-                        className={`text-sm font-bold uppercase rounded-md px-2 py-1 outline-none cursor-pointer transition-colors ${
+                        className={`text-xs font-bold uppercase rounded-md pl-2 pr-1 py-1 outline-none cursor-pointer transition-colors min-w-0 max-w-[92px] truncate ${
                           isDarkMode 
                             ? 'bg-slate-800 text-slate-200 border border-slate-600 focus:border-slate-400' 
                             : 'bg-gray-100 text-gray-700 border border-gray-300 focus:border-gray-500'
@@ -1781,7 +1816,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                         ))}
                       </select>
                     </div>
-                    <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
+                    <p title={formatUSD(filteredTotalCost)} className={`text-xl sm:text-2xl font-black truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
                   </div>
                 </div>
 
@@ -1789,12 +1824,12 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div className="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center text-xl shrink-0">
                     <i className="fa-solid fa-box-archive"></i>
                   </div>
-                  <div>
-                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Orders</p>
-                    <div className="flex items-baseline gap-2">
-                      <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Orders</p>
+                    <div className="flex items-center flex-wrap gap-x-2 gap-y-1">
+                      <p className={`text-xl sm:text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
                       {kpiStats.importCount > 0 && (
-                        <span className="text-xs font-bold text-purple-500 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
+                        <span className="text-xs font-bold text-purple-500 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20 whitespace-nowrap shrink-0">
                           {kpiStats.importCount} Import
                         </span>
                       )}
@@ -1806,9 +1841,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0">
                     <i className="fa-solid fa-file-invoice-dollar"></i>
                   </div>
-                  <div>
-                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Pending Payment</p>
-                    <p className="text-2xl font-black text-red-500">{formatUSD(kpiStats.pendingPayment)}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Pending Payment</p>
+                    <p title={formatUSD(kpiStats.pendingPayment)} className="text-xl sm:text-2xl font-black text-red-500 truncate">{formatUSD(kpiStats.pendingPayment)}</p>
                     <button className="text-[11px] font-semibold text-red-500 group-hover:underline mt-0.5 inline-block cursor-pointer focus:outline-none">Click for details & origin →</button>
                   </div>
                 </div>
@@ -1817,9 +1852,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div className="w-12 h-12 rounded-xl bg-[#2563EB] text-white flex items-center justify-center text-xl shrink-0">
                     <i className="fa-solid fa-chart-pie"></i>
                   </div>
-                  <div>
-                    <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Average % Paid</p>
-                    <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-700'}`}>{kpiStats.avgPaid}%</p>
+                  <div className="min-w-0 flex-1">
+                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Average % Paid</p>
+                    <p className={`text-xl sm:text-2xl font-black truncate ${isDarkMode ? 'text-white' : 'text-gray-700'}`}>{kpiStats.avgPaid}%</p>
                   </div>
                 </div>
               </div>
@@ -1842,11 +1877,12 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     <path d={generateSvgLinePath(monthlyStats.monthlyTotals, 1000, 240, monthlyStats.maxVal)} fill="none" stroke="#DC2626" strokeWidth="3.5" />
                     {monthlyStats.monthlyTotals.map((val, idx) => {
                       const x = (idx / 11) * 920 + 40;
-                      const y = 210 - (val / monthlyStats.maxVal) * 180;
+                      const hasData = val !== null && val !== undefined;
+                      const y = hasData ? 210 - (val / monthlyStats.maxVal) * 180 : null;
                       return (
                         <g key={idx}>
-                          <circle cx={x} cy={y} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#DC2626" strokeWidth="3" />
-                          {val > 0 && <text x={x} y={y - 10} textAnchor="middle" className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-200' : 'fill-gray-800'}`}>{formatShortUSD(val)}</text>}
+                          {hasData && <circle cx={x} cy={y} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#DC2626" strokeWidth="3" />}
+                          {hasData && val > 0 && <text x={x} y={y - 10} textAnchor="middle" className={`text-[11px] font-bold ${isDarkMode ? 'fill-slate-200' : 'fill-gray-800'}`}>{formatShortUSD(val)}</text>}
                           <text x={x} y="232" textAnchor="middle" className={`text-[11px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{monthlyStats.months[idx]}</text>
                         </g>
                       );
@@ -1859,22 +1895,29 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
           {activeTab === 'category' && (
             <div className="flex flex-col gap-6">
-              {/* GRID UNTUK 2 PIE CHART (CATEGORY DRILLDOWN & ORIGIN IMPORT/LOCAL) */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* PIE CHART 1: CATEGORY DRILLDOWN */}
                 <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-full text-left mb-2">
-                    <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Category</h3>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Category</h3>
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-gray-100 text-gray-600 border-gray-300'}`}>
+                        {selectedYear === 'All' ? 'All Time' : selectedYear}
+                      </span>
+                    </div>
                     <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
                       {drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to view sub-categories.' : `Category breakdown for ${selectedGroup}.`}
                     </p>
                   </div>
                   {renderDrilldownPieChart()}
                 </div>
-                {/* PIE CHART 2: IMPORT VS LOCAL */}
                 <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[480px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-full text-left mb-2">
-                    <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Origin</h3>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Origin</h3>
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-gray-100 text-gray-600 border-gray-300'}`}>
+                        {selectedYear === 'All' ? 'All Time' : selectedYear}
+                      </span>
+                    </div>
                     <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
                       Comparison between Import and Local spend.
                     </p>
@@ -1882,14 +1925,16 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   {renderOriginPieChart()}
                 </div>
               </div>
-              {/* BAR CHART / PARETO CATEGORY */}
               <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                   <div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 flex-wrap">
                       <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
                         {barChartGroup ? `Top 20 Items in ${barChartGroup}` : 'Total Spend by Direct & Indirect Category'}
                       </h3>
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-gray-100 text-gray-600 border-gray-300'}`}>
+                        {selectedYear === 'All' ? 'All Time' : selectedYear}
+                      </span>
                       {barChartGroup && (
                         <button 
                           onClick={() => {
@@ -1917,13 +1962,21 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6 border-b pb-4 border-slate-700/50">
                   <div>
-                    <h3 className={`font-bold text-lg uppercase tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {supplierParetoTab === 'lowest20' ? 'LOWEST 20 SPEND BY SUPPLIER' : 'TOP 20 SPEND BY SUPPLIER'}
-                    </h3>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className={`font-bold text-lg uppercase tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {supplierParetoTab === 'lowest20' ? 'LOWEST 20 SPEND BY SUPPLIER' : 'TOP 20 SPEND BY SUPPLIER'}
+                      </h3>
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-gray-100 text-gray-700'}`}>
+                        {selectedYear === 'All' ? 'All Time' : `Year ${selectedYear}`}
+                      </span>
+                    </div>
                     <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
                       {supplierParetoTab === 'lowest20'
                         ? '20 suppliers with the lowest spend along with their cumulative percentages.'
                         : 'Supplier spend distribution analysis with cumulative percentage curve (80/20 Pareto Principle).'}
+                    </p>
+                    <p className={`text-[10px] mt-1 italic ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                      Generated on {new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
                   <div className={`flex p-1 rounded-xl shrink-0 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>
@@ -1947,81 +2000,47 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
           )}
 
-          {activeTab === 'transactions' && (
-            <div className={`rounded-2xl border shadow-xs overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-              <div className={`p-6 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Transaction & Payment Details</h3>
-                <div className="flex gap-2">
-                  {['All', 'Direct', 'Indirect'].map((cat) => (
-                    <button key={cat} onClick={() => setSelectedCategory(cat)} className={`px-3 py-1 text-xs rounded-lg transition-colors cursor-pointer ${selectedCategory === cat ? 'bg-red-600 text-white font-semibold' : isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                      {cat}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm whitespace-nowrap">
-                  <thead>
-                    <tr className={`border-b font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
-                      <th className="py-4 px-6">Date</th>
-                      <th className="py-4 px-6">PO No.</th>
-                      <th className="py-4 px-6">Supplier Name</th>
-                      <th className="py-4 px-6">Category</th>
-                      <th className="py-4 px-6">Origin</th>
-                      <th className="py-4 px-6">Total Cost</th>
-                      <th className="py-4 px-6">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
-                    {filteredOrders.length === 0 ? (
-                      <tr><td colSpan="7" className="py-10 text-center text-gray-400">No transactions found.</td></tr>
-                    ) : (
-                      filteredOrders.map((order, idx) => {
-                        const origin = getOrderOrigin(order);
-                        return (
-                          <tr key={order.poNumber || order.noPO || idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                            <td className={`py-4 px-6 text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderDate(order)}</td>
-                            <td className="py-4 px-6 font-bold text-red-500 hover:underline cursor-pointer">{getPoNumber(order)}</td>
-                            <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{getOrderSupplier(order)}</td>
-                            <td className="py-4 px-6"><span className={`px-3 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'}`}>{normalizeCategory(getOrderCategory(order))}</span></td>
-                            <td className="py-4 px-6"><span className={`px-2.5 py-1 rounded-full text-xs ${getOriginBadgeClass(origin)}`}>{origin.toLowerCase().includes('import') || origin.toLowerCase().includes('impor') ? '🚢 Import' : '📦 Local'}</span></td>
-                            <td className={`py-4 px-6 font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(getOrderTotal(order))}</td>
-                            <td className="py-4 px-6"><span className={`px-3 py-1 rounded-full text-xs ${getStatusBadgeClass(getOrderStatus(order))}`}>{getOrderStatus(order)}</span></td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </main>
       </div>
 
       {showPendingModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className={`rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh] border ${isDarkMode ? 'bg-[#1E293B] border-slate-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
+          <div className={`rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh] border relative ${isDarkMode ? 'bg-[#1E293B] border-slate-700 text-white' : 'bg-white border-gray-200 text-gray-900'}`}>
+            {(isLoading || !pendingModalReady) && (
+              <div className="absolute top-0 left-0 w-full h-[3px] z-10 overflow-hidden bg-transparent">
+                <div
+                  className="h-full w-1/4 bg-red-600 rounded-full"
+                  style={{ animation: 'dpkLoadingBar 1.1s linear infinite' }}
+                />
+              </div>
+            )}
             <div className={`p-5 border-b flex justify-between items-center ${isDarkMode ? 'border-slate-800 bg-[#0F172A]' : 'border-gray-200 bg-gray-50'}`}>
               <h3 className="font-bold text-lg">Pending Invoice Details ({pendingOrders.length})</h3>
               <button onClick={() => setShowPendingModal(false)} className="text-gray-400 hover:text-gray-200 text-lg cursor-pointer"><i className="fa-solid fa-xmark"></i></button>
             </div>
             <div className="p-5 overflow-y-auto space-y-3">
-              {pendingOrders.length === 0 ? (
+              {isLoading || !pendingModalReady ? (
+                <p className="text-center text-gray-400 py-6">Loading pending invoices...</p>
+              ) : pendingOrders.length === 0 ? (
                 <p className="text-center text-gray-400 py-6">No pending payments.</p>
               ) : (
-                pendingOrders.map((po, i) => (
-                  <div key={i} className={`p-4 rounded-xl border flex justify-between items-center transition-colors ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/50' : 'border-gray-200 hover:bg-gray-50'}`}>
-                    <div>
-                      <span className="font-bold text-red-500 text-sm block">{getPoNumber(po)}</span>
-                      <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderSupplier(po)} • {getOrderDate(po)}</span>
+                <>
+                  {pendingOrders.slice(0, 300).map((po, i) => (
+                    <div key={i} className={`p-4 rounded-xl border flex justify-between items-center transition-colors ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/50' : 'border-gray-200 hover:bg-gray-50'}`}>
+                      <div>
+                        <span className="font-bold text-red-500 text-sm block">{getPoNumber(po)}</span>
+                        <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderSupplier(po)} • {getOrderDate(po)}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className={`font-bold text-sm block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(getOrderTotal(po))}</span>
+                        <span className={`px-2 py-0.5 text-[10px] rounded-full ${getOriginBadgeClass(getOrderOrigin(po))}`}>{getOrderOrigin(po)}</span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className={`font-bold text-sm block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(getOrderTotal(po))}</span>
-                      <span className={`px-2 py-0.5 text-[10px] rounded-full ${getOriginBadgeClass(getOrderOrigin(po))}`}>{getOrderOrigin(po)}</span>
-                    </div>
-                  </div>
-                ))
+                  ))}
+                  {pendingOrders.length > 300 && (
+                    <p className="text-center text-xs text-gray-400 pt-2">Showing 300 of {pendingOrders.length} pending invoices.</p>
+                  )}
+                </>
               )}
             </div>
           </div>
