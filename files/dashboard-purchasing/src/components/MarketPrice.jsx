@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
+import AppLayout from './AppLayout'; // Sesuaikan path import jika berbeda
 
 // === KOMPONEN GRAFIK TREN HARGA (SVG Dynamic Chart) ===
 function CommodityChart({ history, isDarkMode, unit }) {
@@ -216,15 +217,11 @@ const emptyCommodities = {
 };
 
 export default function MarketPrice({ changePage, onLogout, activePage = 'marketPrice' }) {  
-  const { hasPermission, user } = useRole();
-  const canManageUsers = hasPermission('manage_users');
+  const { user } = useRole();
   const isAdmin = user?.role_id === 1;
-  const [showProfileCard, setShowProfileCard] = useState(false);
-  const profileRef = useRef(null);
-  const [currentTime, setCurrentTime] = useState(new Date());
   
   // Endpoint API 
-  const API_URL = 'http://idws-n26010:5000/api/market-prices'; // Ubah ke /api/suppliers jika struktur tabelnya disana
+  const API_URL = 'http://idws-n26010:5000/api/market-prices';
   
   // === UI & PROFILE STATE ===
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -237,8 +234,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
   }, [isDarkMode]);  
 
   const [showResetModal, setShowResetModal] = useState(false);
-  
-  // HAPUS PENGGUNAAN LOCALSTORAGE UNTUK COMMODITIES, GUNAKAN STATE KOSONG DEFAULT DULU
   const [commodities, setCommodities] = useState(emptyCommodities);
 
   // FETCH DATA DARI BACKEND SAAT KOMPONEN DIMUAT
@@ -249,7 +244,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
         if (response.ok) {
           const dbData = await response.json();
           
-          // Jika respon adalah array daftar harga (mirip yang di-POST)
           if (Array.isArray(dbData) && dbData.length > 0) {
             let updatedCommodities = JSON.parse(JSON.stringify(emptyCommodities));
             
@@ -268,7 +262,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
                   change: changeStr
                 });
 
-                // Update current price ke yang terbaru (asumsi dbData urutannya diproses sampai akhir)
                 updatedCommodities[key].currentPrice = row.price;
                 updatedCommodities[key].change = changeStr;
                 updatedCommodities[key].isPositive = parseFloat(row.change_percent) >= 0;
@@ -280,7 +273,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
             });
             setCommodities(updatedCommodities);
           } else if (dbData && dbData.crude && dbData.crude.history) {
-            // Jika backend menyimpan seluruh JSON object langsung
             setCommodities(dbData);
           }
         }
@@ -406,7 +398,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
         return new Date().toISOString().split('T')[0];
       };
 
-      // UPDATE IP POST MENGGUNAKAN API_URL
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -425,28 +416,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
       console.error('❌ Error saat POST ke backend:', error);
       return false;
     }
-  };
-
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formattedTime = currentTime.toLocaleTimeString('en-GB', { hour12: false });
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (profileRef.current && !profileRef.current.contains(event.target)) {
-        setShowProfileCard(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleLogout = () => {
-    if (onLogout) onLogout();
-    else if (changePage) changePage('login');
   };
 
   const getFilteredHistory = (history) => {
@@ -480,7 +449,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
     setShowResetModal(true);
   };
 
-  // UPDATE FUNGSI RESET UNTUK HAPUS DATA DI BACKEND ALIH-ALIH LOCALSTORAGE
   const confirmResetData = async () => {
     try {
       await fetch(API_URL, {
@@ -493,301 +461,182 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
     setCommodities(emptyCommodities);
     setShowResetModal(false);
   };
+
   return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-      
-      {/* HEADER UTAMA */}
-      <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
-        <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img 
-                src="/images/logo.png" 
-                alt="Detpak Logo" 
-                className="h-12 w-auto object-contain" 
-              />
-            </div>
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              <button onClick={() => changePage?.('marketprice')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Market Price</button>
-              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-            </nav>
+    <AppLayout
+      activePage={activePage}
+      changePage={changePage}
+      onLogout={onLogout}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    >
+      <div className="space-y-6">
+        <div className="flex justify-between items-end">
+          <div>
+            <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Global Commodity Market Price</h1>
+            <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Real-time benchmark raw material prices for packaging & paper production</p>
           </div>
+          
+          <div className="flex items-center gap-3">
+            {isAdmin ? (
+              <>
+                <button 
+                  onClick={handleResetDataClick}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm flex items-center gap-2 ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'}`}
+                >
+                  <i className="fa-solid fa-trash-can"></i> Reset
+                </button>
 
-          <div className="flex items-center gap-6">
-            <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`}
-              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-            </button>
+                <label className="cursor-pointer bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-md flex items-center gap-2">
+                  <i className="fa-solid fa-file-excel"></i> Import Excel
+                  <input 
+                    type="file" 
+                    accept=".xlsx, .xls, .csv" 
+                    className="hidden" 
+                    onChange={handleFileUpload} 
+                  />
+                </label>
+              </>
+            ) : null}
+          </div>
+        </div>
 
-            <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
-              <i className="fa-regular fa-clock text-blue-500"></i>
-              <span>{formattedTime}</span>
-            </div>
-
-            <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
-                {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
-              </button>
-
-              {showProfileCard && (
-                <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                    <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      {(user?.username || 'AD').slice(0, 2)}
-                    </div>
-                    <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || '-'}</h4>
-                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
-                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
-                    </div>
-                  </div>
-                  <div className="pt-2 space-y-1">
-                    <button onClick={() => { setShowProfileCard(false); changePage?.('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
-                      <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
-                    </button>
-                    <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
-                    </button>
-                  </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {Object.keys(commodities).map((key) => {
+            const item = commodities[key];
+            const isSelected = selectedKey === key;
+            return (
+              <div
+                key={key}
+                onClick={() => setSelectedKey(key)}
+                className={`p-4 border rounded-xl shadow-xs cursor-pointer transition-all ${
+                  isSelected 
+                    ? isDarkMode ? 'border-red-500 ring-2 ring-red-500/20 bg-slate-800' : 'border-[#004797] ring-2 ring-[#004797]/20 bg-blue-50/20' 
+                    : isDarkMode ? 'bg-[#1E293B] border-slate-800 hover:border-slate-700' : 'bg-white border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <p className={`text-xs font-semibold truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{item.name}</p>
+                <div className="mt-2 flex items-baseline justify-between">
+                  <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {item.currentPrice === 0 ? '-' : item.currentPrice.toLocaleString('en-US')}
+                  </span>
+                  <span className={`text-xs font-semibold ${item.currentPrice === 0 ? 'text-gray-500' : item.isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {item.change === '0.00%' && item.currentPrice === 0 ? '-' : item.change}
+                  </span>
                 </div>
+                <p className={`text-[11px] mt-1 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{item.unit}</p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className={`p-6 border rounded-2xl shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+          <div className={`flex flex-col md:flex-row md:items-center justify-between border-b pb-4 gap-4 ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+            <div>
+              <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{activeItem?.name}</h2>
+              <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.description}</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className={`text-2xl font-extrabold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>
+                {activeItem?.currentPrice === 0 ? '0' : activeItem?.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.unit}</span>
+              </span>
+              {activeItem?.currentPrice !== 0 && (
+                <span className={`px-2.5 py-1 text-xs font-bold rounded-full ${activeItem?.isPositive ? (isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950/80 text-red-400 border border-red-800' : 'bg-red-100 text-red-700')}`}>
+                  {activeItem?.change}
+                </span>
               )}
             </div>
           </div>
-        </div>
 
-        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
-          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Packaging
-          </h2>
-          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-          </p>
-        </div>
-      </header>
-
-      {/* BODY SIDEBAR & CONTENT */}
-      <div className="flex flex-1 overflow-hidden relative">
-        {/* === SIDEBAR === */}
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
-          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
-        }`}>
-          <nav className="flex flex-col gap-2 px-4">
-            {[
-              { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
-              { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
-              { id: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
-              { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
-              { id: 'report', label: 'Report', icon: 'fa-file-lines' },
-              { id: 'settings', label: 'Settings', icon: 'fa-gear' },
-            ].map((item) => {
-              const isActive = activePage === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => changePage?.(item.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                    isActive
-                      ? 'bg-[#E31837] text-white font-bold shadow-xs'
-                      : isDarkMode
-                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
-                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
-                  }`}
-                >
-                  <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
-                </button>
-              );
-            })}
-
-            {canManageUsers && (
-              <button
-                onClick={() => changePage?.('userManagement')}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  activePage === 'userManagement'
-                    ? 'bg-[#E31837] text-white font-bold shadow-xs'
-                    : isDarkMode
-                    ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
-                    : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
-                }`}
-              >
-                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
-              </button>
-            )}
-          </nav>
-        </aside>
-
-        <main className="flex-1 overflow-y-auto p-8 space-y-6 relative">
-          <div className="flex justify-between items-end">
-            <div>
-              <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Global Commodity Market Price</h1>
-              <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Real-time benchmark raw material prices for packaging & paper production</p>
-            </div>
-            
-            <div className="flex items-center gap-3">
-              {isAdmin ? (
-                <>
+          <div className="pt-2 pb-4">
+            <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
+              <h3 className={`text-sm font-bold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Price Movement Trend</h3>
+              
+              <div className="flex items-center gap-1.5 p-1 rounded-lg border shadow-sm select-none" style={{ backgroundColor: isDarkMode ? '#0F172A' : '#F3F4F6', borderColor: isDarkMode ? '#334155' : '#E5E7EB' }}>
+                {['1W', '1M', '6M', '1Y', 'All'].map(filterOption => (
                   <button 
-                    onClick={handleResetDataClick}
-                    className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-sm flex items-center gap-2 ${isDarkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-white text-gray-600 border border-gray-300 hover:bg-gray-50'}`}
+                    key={filterOption}
+                    onClick={() => setTimeFilter(filterOption)}
+                    className={`px-3.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
+                      timeFilter === filterOption 
+                        ? 'bg-[#E31837] text-white shadow-md' 
+                        : isDarkMode 
+                          ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' 
+                          : 'text-gray-500 hover:text-gray-800 hover:bg-white'
+                    }`}
                   >
-                    <i className="fa-solid fa-trash-can"></i> Reset
+                    {filterOption === '1W' ? '1 Week' : filterOption === '1M' ? '1 Month' : filterOption === '6M' ? '6 Months' : filterOption === '1Y' ? '1 Year' : 'All'}
                   </button>
-
-                  <label className="cursor-pointer bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition-colors shadow-md flex items-center gap-2">
-                    <i className="fa-solid fa-file-excel"></i> Import Excel
-                    <input 
-                      type="file" 
-                      accept=".xlsx, .xls, .csv" 
-                      className="hidden" 
-                      onChange={handleFileUpload} 
-                    />
-                  </label>
-                </>
-              ) : null}
+                ))}
+              </div>
             </div>
+            <CommodityChart history={filteredHistory} isDarkMode={isDarkMode} unit={activeItem?.unit} />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            {Object.keys(commodities).map((key) => {
-              const item = commodities[key];
-              const isSelected = selectedKey === key;
-              return (
-                <div
-                  key={key}
-                  onClick={() => setSelectedKey(key)}
-                  className={`p-4 border rounded-xl shadow-xs cursor-pointer transition-all ${
-                    isSelected 
-                      ? isDarkMode ? 'border-red-500 ring-2 ring-red-500/20 bg-slate-800' : 'border-[#004797] ring-2 ring-[#004797]/20 bg-blue-50/20' 
-                      : isDarkMode ? 'bg-[#1E293B] border-slate-800 hover:border-slate-700' : 'bg-white border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <p className={`text-xs font-semibold truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{item.name}</p>
-                  <div className="mt-2 flex items-baseline justify-between">
-                    <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {item.currentPrice === 0 ? '-' : item.currentPrice.toLocaleString('en-US')}
-                    </span>
-                    <span className={`text-xs font-semibold ${item.currentPrice === 0 ? 'text-gray-500' : item.isPositive ? 'text-emerald-500' : 'text-red-500'}`}>
-                      {item.change === '0.00%' && item.currentPrice === 0 ? '-' : item.change}
-                    </span>
-                  </div>
-                  <p className={`text-[11px] mt-1 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{item.unit}</p>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className={`p-6 border rounded-2xl shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-            <div className={`flex flex-col md:flex-row md:items-center justify-between border-b pb-4 gap-4 ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-              <div>
-                <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{activeItem?.name}</h2>
-                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.description}</p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={`text-2xl font-extrabold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>
-                  {activeItem?.currentPrice === 0 ? '0' : activeItem?.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.unit}</span>
-                </span>
-                {activeItem?.currentPrice !== 0 && (
-                  <span className={`px-2.5 py-1 text-xs font-bold rounded-full ${activeItem?.isPositive ? (isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950/80 text-red-400 border border-red-800' : 'bg-red-100 text-red-700')}`}>
-                    {activeItem?.change}
-                  </span>
-                )}
-              </div>
+          <div className={`grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
+            <div>
+              <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Open Price</span>
+              <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.open || '-'}</span>
             </div>
-
-            <div className="pt-2 pb-4">
-              <div className="flex flex-wrap items-center justify-between mb-4 gap-4">
-                <h3 className={`text-sm font-bold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Price Movement Trend</h3>
-                
-                <div className="flex items-center gap-1.5 p-1 rounded-lg border shadow-sm select-none" style={{ backgroundColor: isDarkMode ? '#0F172A' : '#F3F4F6', borderColor: isDarkMode ? '#334155' : '#E5E7EB' }}>
-                  {['1W', '1M', '6M', '1Y', 'All'].map(filterOption => (
-                    <button 
-                      key={filterOption}
-                      onClick={() => setTimeFilter(filterOption)}
-                      className={`px-3.5 py-1 text-xs font-bold rounded-md transition-all cursor-pointer ${
-                        timeFilter === filterOption 
-                          ? 'bg-[#E31837] text-white shadow-md' 
-                          : isDarkMode 
-                            ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' 
-                            : 'text-gray-500 hover:text-gray-800 hover:bg-white'
-                      }`}
-                    >
-                      {filterOption === '1W' ? '1 Week' : filterOption === '1M' ? '1 Month' : filterOption === '6M' ? '6 Months' : filterOption === '1Y' ? '1 Year' : 'All'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <CommodityChart history={filteredHistory} isDarkMode={isDarkMode} unit={activeItem?.unit} />
+            <div>
+              <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>High Price</span>
+              <span className="text-base font-semibold text-emerald-500">{activeItem?.high || '-'}</span>
             </div>
-
-            <div className={`grid grid-cols-2 sm:grid-cols-4 gap-4 p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-100'}`}>
-              <div>
-                <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Open Price</span>
-                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.open || '-'}</span>
-              </div>
-              <div>
-                <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>High Price</span>
-                <span className="text-base font-semibold text-emerald-500">{activeItem?.high || '-'}</span>
-              </div>
-              <div>
-                <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Low Price</span>
-                <span className="text-base font-semibold text-red-500">{activeItem?.low || '-'}</span>
-              </div>
-              <div>
-                <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Trading Volume</span>
-                <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.vol || '-'}</span>
-              </div>
+            <div>
+              <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Low Price</span>
+              <span className="text-base font-semibold text-red-500">{activeItem?.low || '-'}</span>
+            </div>
+            <div>
+              <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Trading Volume</span>
+              <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.vol || '-'}</span>
             </div>
           </div>
+        </div>
 
-          <div className={`border rounded-2xl shadow-xs overflow-hidden pb-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-            <div className={`px-6 py-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-              <h3 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Commodity Price History</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm whitespace-nowrap">
-                <thead className={`text-xs font-semibold uppercase border-b ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+        <div className={`border rounded-2xl shadow-xs overflow-hidden pb-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+          <div className={`px-6 py-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
+            <h3 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>Commodity Price History</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm whitespace-nowrap">
+              <thead className={`text-xs font-semibold uppercase border-b ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
+                <tr>
+                  <th className="px-6 py-3">Date</th>
+                  <th className="px-6 py-3">Last Price</th>
+                  <th className="px-6 py-3">Open</th>
+                  <th className="px-6 py-3">High</th>
+                  <th className="px-6 py-3">Low</th>
+                  <th className="px-6 py-3">Volume</th>
+                  <th className="px-6 py-3">Change %</th>
+                </tr>
+              </thead>
+              <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
+                {filteredHistory.length === 0 ? (
                   <tr>
-                    <th className="px-6 py-3">Date</th>
-                    <th className="px-6 py-3">Last Price</th>
-                    <th className="px-6 py-3">Open</th>
-                    <th className="px-6 py-3">High</th>
-                    <th className="px-6 py-3">Low</th>
-                    <th className="px-6 py-3">Volume</th>
-                    <th className="px-6 py-3">Change %</th>
+                    <td colSpan="7" className={`px-6 py-10 text-center font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                      <i className="fa-solid fa-folder-open text-3xl mb-3 block"></i>
+                      Belum ada data histori. Silakan klik tombol "Import Excel" di atas.
+                    </td>
                   </tr>
-                </thead>
-                <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
-                  {filteredHistory.length === 0 ? (
-                    <tr>
-                      <td colSpan="7" className={`px-6 py-10 text-center font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                        <i className="fa-solid fa-folder-open text-3xl mb-3 block"></i>
-                        Belum ada data histori. Silakan klik tombol "Import Excel" di atas.
+                ) : (
+                  filteredHistory.map((row, idx) => (
+                    <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                      <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{row.date}</td>
+                      <td className={`px-6 py-3.5 font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>{row.price}</td>
+                      <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.open}</td>
+                      <td className="px-6 py-3.5 text-emerald-500 font-medium">{row.high}</td>
+                      <td className="px-6 py-3.5 text-red-500 font-medium">{row.low}</td>
+                      <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.vol}</td>
+                      <td className={`px-6 py-3.5 font-semibold ${row.change && row.change.startsWith('+') ? 'text-emerald-500' : row.change && row.change.startsWith('-') ? 'text-red-500' : isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>
+                        {row.change}
                       </td>
                     </tr>
-                  ) : (
-                    filteredHistory.map((row, idx) => (
-                      <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                        <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{row.date}</td>
-                        <td className={`px-6 py-3.5 font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>{row.price}</td>
-                        <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.open}</td>
-                        <td className="px-6 py-3.5 text-emerald-500 font-medium">{row.high}</td>
-                        <td className="px-6 py-3.5 text-red-500 font-medium">{row.low}</td>
-                        <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.vol}</td>
-                        <td className={`px-6 py-3.5 font-semibold ${row.change && row.change.startsWith('+') ? 'text-emerald-500' : row.change && row.change.startsWith('-') ? 'text-red-500' : isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>
-                          {row.change}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
-        </main>
+        </div>
       </div>
 
       {/* POPUP KONFIRMASI RESET */}
@@ -820,6 +669,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
           </div>
         </div>
       )}
-    </div>
+    </AppLayout>
   );
 }

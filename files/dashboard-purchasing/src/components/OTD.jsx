@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
+import AppLayout from './AppLayout';
 
 const COLORS = ['#10b981', '#ef4444', '#3b82f6', '#f59e0b', '#8b5cf6'];
 
@@ -26,21 +27,14 @@ const KPICard = ({ title, value, color = '#3b82f6', isDarkMode }) => (
 const formatCurrency = (num) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num || 0);
 const formatPercent = (num) => `${(num || 0).toFixed(1)}%`;
 
-// Fungsi helper untuk mendapatkan inisial nama
-const getInitials = (name) => {
-  if (!name) return 'U';
-  const parts = name.split(' ');
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
-  return name.substring(0, 2).toUpperCase();
-};
-
 export default function OTD({ changePage: propChangePage, onLogout, activePage: propActivePage = 'otd' }) {
   const { hasPermission, user } = useRole();
   const canManageUsers = hasPermission('manage_users');
   
   // Pengecekan apakah user memiliki hak akses Admin
-const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
-  // === UI & PROFILE STATE ===
+  const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
+
+  // === UI & THEME STATE ===
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const savedTheme = localStorage.getItem('theme');
     return savedTheme !== null ? savedTheme === 'dark' : false;
@@ -51,10 +45,7 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
 
-  const [showProfileCard, setShowProfileCard] = useState(false);
   const [localActivePage, setLocalActivePage] = useState(propActivePage);
-  const [time, setTime] = useState(new Date());
-
   const activePage = propActivePage || localActivePage;
   const changePage = propChangePage || ((page) => setLocalActivePage(page));
 
@@ -66,32 +57,7 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
   const [statusMessage, setStatusMessage] = useState('');
   const [filterMonth, setFilterMonth] = useState(''); // '' = tampilkan semua periode, format "YYYY-MM"
 
-  const profileRef = useRef(null);
   const fileInputRef = useRef(null);
-
-  // Update Jam Realtime
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  const formattedTime = time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-  // Handle Klik di Luar Card Profile
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (profileRef.current && !profileRef.current.contains(event.target)) {
-        setShowProfileCard(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleLogout = () => {
-    if (typeof onLogout === 'function') {
-      onLogout();
-    }
-  };
 
   // -------------------------------------------------------------
   // AMBIL DATA OTD PERFORMANCE DARI DATABASE
@@ -117,7 +83,7 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
   // FUNGSI IMPORT EXCEL (format KPI.xlsx)
   // -------------------------------------------------------------
   const handleFileUpload = (e) => {
-    if (!isAdmin) return; // Proteksi tambahan di level handler
+    if (!isAdmin) return;
 
     const file = e.target.files[0];
     if (!file) return;
@@ -138,10 +104,9 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
       for (const row of json) {
         const saved = await saveOTDPerformanceToBackend(row);
         if (saved) successCount++;
-        await new Promise(resolve => setTimeout(resolve, 100)); // hindari rate limit
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
 
-      // Ambil ulang data dari database supaya dashboard konsisten dengan yang tersimpan
       await fetchOtdData();
 
       setIsImporting(false);
@@ -189,7 +154,7 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
   // HAPUS SEMUA DATA OTD PERFORMANCE DI DATABASE
   // -------------------------------------------------------------
   const clearOtdData = async () => {
-    if (!isAdmin) return; // Proteksi tambahan di level handler
+    if (!isAdmin) return;
 
     setIsClearing(true);
     setStatusMessage('');
@@ -224,7 +189,7 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
     if (!filterMonth) return rawData;
     return rawData.filter(row => {
       if (!row.record_date) return false;
-      const rowMonth = new Date(row.record_date).toISOString().slice(0, 7); // "YYYY-MM"
+      const rowMonth = new Date(row.record_date).toISOString().slice(0, 7);
       return rowMonth === filterMonth;
     });
   }, [rawData, filterMonth]);
@@ -329,343 +294,223 @@ const isAdmin = user?.role?.toLowerCase()?.trim() === 'admin' || canManageUsers;
   };
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
-
-      {/* HEADER UTAMA */}
-      <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
-        <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage('dashboard')}>
-              <img
-                src="/images/logo.png"
-                alt="Detpak Logo"
-                className="h-12 w-auto object-contain"
-              />
-            </div>
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              <button onClick={() => changePage('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
-              <button onClick={() => changePage('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">OTD Performance</button>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`}
-              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-            </button>
-
-            <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
-              <i className="fa-regular fa-clock text-blue-500"></i>
-              <span>{formattedTime}</span>
-            </div>
-
-            <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}>
-                {user?.name || user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
-              </button>
-
-              {showProfileCard && (
-                <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                    <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      {getInitials(user?.name || user?.username)}
-                    </div>
-                    <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.name || user?.username || '-'}</h4>
-                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
-                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
-                    </div>
-                  </div>
-                  <div className="pt-2 space-y-1">
-                    <button onClick={() => { setShowProfileCard(false); changePage('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
-                      <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
-                    </button>
-                    <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
-          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Packaging
-          </h2>
-          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-          </p>
-        </div>
-      </header>
-
-      {/* BODY SIDEBAR & CONTENT */}
-      <div className="flex flex-1 overflow-hidden relative">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
-          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
+    <AppLayout
+      activePage={activePage}
+      changePage={changePage}
+      onLogout={onLogout}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+    >
+      <div className="space-y-6">
+        {/* UPLOAD FILE SECTION */}
+        <div className={`flex flex-wrap justify-between items-center gap-4 p-4 rounded-xl border transition-colors shadow-sm ${
+          isDarkMode ? 'bg-[#1E293B] border-slate-700/60' : 'bg-white border-gray-200'
         }`}>
-          <nav className="flex flex-col gap-2 px-4">
-            {[
-              { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
-              { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
-              { id: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
-              { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
-              { id: 'report', label: 'Report', icon: 'fa-file-lines' },
-              { id: 'settings', label: 'Settings', icon: 'fa-gear' },
-            ].map((item) => {
-              const isActive = activePage === item.id;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => changePage(item.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                    isActive
-                      ? 'bg-[#E31837] text-white font-bold shadow-xs'
-                      : isDarkMode
-                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
-                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
-                  }`}
-                >
-                  <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
-                </button>
-              );
-            })}
+          <div>
+            <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload KPI Data</h3>
+            <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+              Import your <span className="font-semibold italic">format KPI.xlsx</span> file here to update the OTD Performance dashboard.
+            </p>
+            {statusMessage && (
+              <p className={`text-sm mt-1 font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{statusMessage}</p>
+            )}
+          </div>
 
-            {canManageUsers && (
+          <div className="flex items-center gap-3">
+            {/* Filter Bulan & Tahun */}
+            <input
+              type="month"
+              value={filterMonth}
+              onChange={(e) => setFilterMonth(e.target.value)}
+              className={`border px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs outline-none cursor-pointer transition-colors ${
+                isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-300 focus:border-slate-500' : 'bg-white border-slate-200 text-slate-600 focus:border-blue-400'
+              }`}
+            />
+            {filterMonth && (
               <button
-                onClick={() => changePage('userManagement')}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  activePage === 'userManagement'
-                    ? 'bg-[#E31837] text-white font-bold shadow-xs'
-                    : isDarkMode
-                    ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
-                    : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
+                onClick={() => setFilterMonth('')}
+                className={`px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs transition-colors cursor-pointer ${
+                  isDarkMode ? 'bg-[#0F172A] border border-slate-700 text-slate-300 hover:bg-slate-800' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
                 }`}
+                title="Tampilkan semua periode"
               >
-                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
+                Semua Periode
               </button>
             )}
-          </nav>
-        </aside>
 
-        <main className="flex-1 overflow-y-auto p-6 relative">
-
-          {/* UPLOAD FILE SECTION */}
-          <div className={`mb-6 flex flex-wrap justify-between items-center gap-4 p-4 rounded-xl border transition-colors shadow-sm ${
-            isDarkMode ? 'bg-[#1E293B] border-slate-700/60' : 'bg-white border-gray-200'
-          }`}>
-            <div>
-              <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload KPI Data</h3>
-              <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                Import your <span className="font-semibold italic">format KPI.xlsx</span> file here to update the OTD Performance dashboard.
-              </p>
-              {statusMessage && (
-                <p className={`text-sm mt-1 font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>{statusMessage}</p>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              {/* Filter Bulan & Tahun */}
-              <input
-                type="month"
-                value={filterMonth}
-                onChange={(e) => setFilterMonth(e.target.value)}
-                className={`border px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs outline-none cursor-pointer transition-colors ${
-                  isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-300 focus:border-slate-500' : 'bg-white border-slate-200 text-slate-600 focus:border-blue-400'
-                }`}
-              />
-              {filterMonth && (
+            {/* Tombol Import Excel & Clear Data hanya tampil untuk Admin */}
+            {isAdmin && (
+              <>
+                <input
+                  type="file"
+                  accept=".xlsx, .xls"
+                  ref={fileInputRef}
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  disabled={isImporting}
+                />
                 <button
-                  onClick={() => setFilterMonth('')}
-                  className={`px-3 py-2.5 rounded-lg text-sm font-medium shadow-xs transition-colors cursor-pointer ${
-                    isDarkMode ? 'bg-[#0F172A] border border-slate-700 text-slate-300 hover:bg-slate-800' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                  onClick={() => fileInputRef.current.click()}
+                  disabled={isImporting}
+                  className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 ${
+                    isImporting ? 'bg-slate-400 cursor-not-allowed text-white' : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                   }`}
-                  title="Tampilkan semua periode"
                 >
-                  Semua Periode
+                  <i className={`fa-solid ${isImporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`}></i>
+                  {isImporting ? 'Syncing...' : 'Import Excel'}
                 </button>
-              )}
 
-              {/* Tombol Import Excel & Clear Data hanya tampil untuk Admin */}
-              {isAdmin && (
-                <>
-                  <input
-                    type="file"
-                    accept=".xlsx, .xls"
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    disabled={isImporting}
-                  />
-                  <button
-                    onClick={() => fileInputRef.current.click()}
-                    disabled={isImporting}
-                    className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 ${
-                      isImporting ? 'bg-slate-400 cursor-not-allowed text-white' : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
-                    }`}
-                  >
-                    <i className={`fa-solid ${isImporting ? 'fa-spinner fa-spin' : 'fa-file-excel'}`}></i>
-                    {isImporting ? 'Syncing...' : 'Import Excel'}
-                  </button>
+                <button
+                  onClick={() => setShowClearConfirm(true)}
+                  disabled={isClearing || rawData.length === 0}
+                  className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 cursor-pointer ${
+                    isClearing || rawData.length === 0
+                      ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                      : 'bg-red-600 hover:bg-red-700 text-white'
+                  }`}
+                >
+                  <i className="fa-solid fa-trash"></i> Clear Data
+                </button>
+              </>
+            )}
+          </div>
+        </div>
 
-                  <button
-                    onClick={() => setShowClearConfirm(true)}
-                    disabled={isClearing || rawData.length === 0}
-                    className={`px-5 py-2.5 rounded-lg font-semibold transition-colors shadow-sm flex items-center gap-2 cursor-pointer ${
-                      isClearing || rawData.length === 0
-                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                        : 'bg-red-600 hover:bg-red-700 text-white'
-                    }`}
-                  >
-                    <i className="fa-solid fa-trash"></i> Clear Data
-                  </button>
-                </>
-              )}
+        {/* MODAL KONFIRMASI CLEAR DATA */}
+        {showClearConfirm && isAdmin && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className={`w-full max-w-sm rounded-xl p-6 shadow-xl ${isDarkMode ? 'bg-[#1E293B] text-slate-100' : 'bg-white text-gray-800'}`}>
+              <h3 className="text-lg font-bold mb-2">Hapus semua data OTD Performance?</h3>
+              <p className={`text-sm mb-6 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                Tindakan ini akan menghapus seluruh data OTD Performance dari database secara permanen dan tidak bisa dibatalkan.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setShowClearConfirm(false)}
+                  disabled={isClearing}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${
+                    isDarkMode ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  Batal
+                </button>
+                <button
+                  onClick={clearOtdData}
+                  disabled={isClearing}
+                  className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer flex items-center gap-2"
+                >
+                  {isClearing && <i className="fa-solid fa-spinner fa-spin"></i>}
+                  Ya, Hapus Semua
+                </button>
+              </div>
             </div>
           </div>
+        )}
 
-          {/* MODAL KONFIRMASI CLEAR DATA */}
-          {showClearConfirm && isAdmin && (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-              <div className={`w-full max-w-sm rounded-xl p-6 shadow-xl ${isDarkMode ? 'bg-[#1E293B] text-slate-100' : 'bg-white text-gray-800'}`}>
-                <h3 className="text-lg font-bold mb-2">Hapus semua data OTD Performance?</h3>
-                <p className={`text-sm mb-6 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                  Tindakan ini akan menghapus seluruh data OTD Performance dari database secara permanen dan tidak bisa dibatalkan.
-                </p>
-                <div className="flex justify-end gap-3">
-                  <button
-                    onClick={() => setShowClearConfirm(false)}
-                    disabled={isClearing}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium cursor-pointer ${
-                      isDarkMode ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
-                  >
-                    Batal
-                  </button>
-                  <button
-                    onClick={clearOtdData}
-                    disabled={isClearing}
-                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer flex items-center gap-2"
-                  >
-                    {isClearing && <i className="fa-solid fa-spinner fa-spin"></i>}
-                    Ya, Hapus Semua
-                  </button>
+        {!dashboardData ? (
+          <div className={`flex flex-col items-center justify-center h-96 border-2 border-dashed rounded-xl transition-colors ${
+            isDarkMode ? 'border-slate-700 bg-[#1E293B]/40' : 'border-gray-300 bg-white/50'
+          }`}>
+            <i className={`fa-solid fa-truck-fast text-6xl mb-4 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
+            <h3 className={`text-xl font-semibold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>No Data Available</h3>
+            <p className={`mt-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>
+              Please import the <span className="italic">format KPI.xlsx</span> file to view OTD metrics.
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* KPI CARDS GRID */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+              <KPICard title="Total POs" value={dashboardData.kpi.totalPOs} color="#60a5fa" isDarkMode={isDarkMode} />
+              <KPICard title="On-Time Delivery %" value={formatPercent(dashboardData.kpi.otdPercent)} color={dashboardData.kpi.otdPercent >= 90 ? "#10b981" : "#f59e0b"} isDarkMode={isDarkMode} />
+              <KPICard title="Total On-Time" value={dashboardData.kpi.onTimePOs} color="#10b981" isDarkMode={isDarkMode} />
+              <KPICard title="Total Late" value={dashboardData.kpi.latePOs} color="#ef4444" isDarkMode={isDarkMode} />
+              <KPICard title="Avg Cycle Time (Days)" value={dashboardData.kpi.avgCycleTime.toFixed(1)} color="#a78bfa" isDarkMode={isDarkMode} />
+              <KPICard title="Active Suppliers" value={dashboardData.kpi.activeSuppliers} color="#fb923c" isDarkMode={isDarkMode} />
+              <KPICard title="Total Spend Impact" value={formatCurrency(dashboardData.kpi.totalSpend)} color="#60a5fa" isDarkMode={isDarkMode} />
+            </div>
+
+            {/* BAR CHARTS ROW */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+              }`}>
+                <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Supplier</h3>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={dashboardData.charts.supplierData} margin={{ top: 5, right: 10, left: 10, bottom: 85 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                      <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
+                      <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                      <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
+                      <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={22} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+              }`}>
+                <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Category</h3>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={dashboardData.charts.categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 65 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                      <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
+                      <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                      <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
+                      <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#10b981" radius={[4, 4, 0, 0]} barSize={22} />
+                    </BarChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
             </div>
-          )}
 
-          {!dashboardData ? (
-             <div className={`flex flex-col items-center justify-center h-96 border-2 border-dashed rounded-xl transition-colors ${
-               isDarkMode ? 'border-slate-700 bg-[#1E293B]/40' : 'border-gray-300 bg-white/50'
-             }`}>
-                <i className={`fa-solid fa-truck-fast text-6xl mb-4 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
-                <h3 className={`text-xl font-semibold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>No Data Available</h3>
-                <p className={`mt-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>
-                  Please import the <span className="italic">format KPI.xlsx</span> file to view OTD metrics.
-                </p>
-             </div>
-          ) : (
-            <>
-              {/* KPI CARDS GRID */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <KPICard title="Total POs" value={dashboardData.kpi.totalPOs} color="#60a5fa" isDarkMode={isDarkMode} />
-                <KPICard title="On-Time Delivery %" value={formatPercent(dashboardData.kpi.otdPercent)} color={dashboardData.kpi.otdPercent >= 90 ? "#10b981" : "#f59e0b"} isDarkMode={isDarkMode} />
-                <KPICard title="Total On-Time" value={dashboardData.kpi.onTimePOs} color="#10b981" isDarkMode={isDarkMode} />
-                <KPICard title="Total Late" value={dashboardData.kpi.latePOs} color="#ef4444" isDarkMode={isDarkMode} />
-                <KPICard title="Avg Cycle Time (Days)" value={dashboardData.kpi.avgCycleTime.toFixed(1)} color="#a78bfa" isDarkMode={isDarkMode} />
-                <KPICard title="Active Suppliers" value={dashboardData.kpi.activeSuppliers} color="#fb923c" isDarkMode={isDarkMode} />
-                <KPICard title="Total Spend Impact" value={formatCurrency(dashboardData.kpi.totalSpend)} color="#60a5fa" isDarkMode={isDarkMode} />
-              </div>
-
-              {/* BAR CHARTS ROW */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
-                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
-                }`}>
-                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Supplier</h3>
-                  <div className="h-72">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={dashboardData.charts.supplierData} margin={{ top: 5, right: 10, left: 10, bottom: 85 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
-                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
-                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
-                        <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#3b82f6" radius={[4, 4, 0, 0]} barSize={22} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
-                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
-                }`}>
-                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>OTD % by Category</h3>
-                  <div className="h-72">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={dashboardData.charts.categoryData} margin={{ top: 5, right: 10, left: 10, bottom: 65 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                        <XAxis dataKey="name" angle={-45} textAnchor="end" interval={0} tick={{ fontSize: 10, fill: tickColor }} />
-                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
-                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
-                        <Bar dataKey="OTD %" name="On-Time Delivery (%)" fill="#10b981" radius={[4, 4, 0, 0]} barSize={22} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+            {/* LINE & PIE CHARTS ROW */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+              }`}>
+                <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Monthly OTD % Trend</h3>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dashboardData.charts.trendData} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
+                      <XAxis dataKey="month" tick={{ fontSize: 11, fill: tickColor }} />
+                      <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
+                      <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
+                      <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
+                      <Line type="monotone" dataKey="OTD %" name="On-Time Delivery (%)" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4, fill: '#f59e0b' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* LINE & PIE CHARTS ROW */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
-                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
-                }`}>
-                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Monthly OTD % Trend</h3>
-                  <div className="h-72">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={dashboardData.charts.trendData} margin={{ top: 20, right: 20, left: 10, bottom: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                        <XAxis dataKey="month" tick={{ fontSize: 11, fill: tickColor }} />
-                        <YAxis tick={{ fontSize: 11, fill: tickColor }} domain={[0, 100]} />
-                        <Tooltip contentStyle={tooltipStyle} formatter={(value) => `${value}%`} />
-                        <Legend verticalAlign="top" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
-                        <Line type="monotone" dataKey="OTD %" name="On-Time Delivery (%)" stroke="#f59e0b" strokeWidth={3} dot={{ r: 4, fill: '#f59e0b' }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
-                  isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
-                }`}>
-                  <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Delivery Status Breakdown</h3>
-                  <div className="h-72 flex justify-center items-center">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={dashboardData.charts.deliveryStatusData} dataKey="value" cx="50%" cy="50%" outerRadius={95} fill="#8884d8" stroke="none">
-                          {dashboardData.charts.deliveryStatusData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={tooltipStyle} />
-                        <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
+              <div className={`border rounded-xl p-5 shadow-sm transition-colors ${
+                isDarkMode ? 'bg-[#182238] border-slate-700/60' : 'bg-white border-gray-200'
+              }`}>
+                <h3 className={`text-center font-semibold mb-4 text-base ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>Delivery Status Breakdown</h3>
+                <div className="h-72 flex justify-center items-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={dashboardData.charts.deliveryStatusData} dataKey="value" cx="50%" cy="50%" outerRadius={95} fill="#8884d8" stroke="none">
+                        {dashboardData.charts.deliveryStatusData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend layout="vertical" verticalAlign="middle" align="right" wrapperStyle={{ fontSize: '12px', color: tickColor }} />
+                    </PieChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
-            </>
-          )}
-        </main>
+            </div>
+          </>
+        )}
       </div>
-    </div>
+    </AppLayout>
   );
 }

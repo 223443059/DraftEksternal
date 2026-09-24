@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRole } from '../context/RoleContext';
 import { useTheme } from '../hooks/useTheme';
 import { API_ENDPOINTS } from '../utils/api.config';
+import AppLayout from './AppLayout'; // header + sidebar + bar menu atas (dipakai bersama semua halaman)
 
 // === CONVERSION RATE ===
 // Kurs IDR per 1 USD berdasarkan tahun transaksi (disamakan dengan PurchaseOrders.jsx)
@@ -49,20 +50,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   // Pareto Category Modal State
   const [showCategoryPareto, setShowCategoryPareto] = useState(false);
   const [selectedCategoryForPareto, setSelectedCategoryForPareto] = useState(null);
-
-  // Profile Fallback & Notification State
-  const [showProfileCard, setShowProfileCard] = useState(false);
-  const profileRef = useRef(null);
-
-  // Real-time Clock for Header
-  const [currentTime, setCurrentTime] = useState(new Date());
-
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formattedTime = currentTime.toLocaleTimeString('en-GB', { hour12: false });
 
   // Fetch Supplier list
   useEffect(() => {
@@ -144,21 +131,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     }
     setPendingModalReady(false);
   }, [showPendingModal]);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (profileRef.current && !profileRef.current.contains(event.target)) {
-        setShowProfileCard(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const handleLogout = () => {
-    if (onLogout) onLogout();
-    else if (changePage) changePage('login');
-  };
 
   // === 2. DATA HELPER GETTERS ===
   const getOrderTotal = (order) => {
@@ -1565,8 +1537,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   ];
 
   return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#F0F7FD] text-gray-800'}`}>
-
+    <>
       {isLoading && (
         <>
           <style>{`
@@ -1584,182 +1555,38 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         </>
       )}
 
-      {/* MAIN HEADER */}
-      <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
-        <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex flex-col justify-center">
-            <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-              Detmold Packaging
-            </h2>
-            <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-              Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-            </p>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
-              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-            </button>
-            
-            <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
-              <i className="fa-regular fa-clock text-blue-500"></i>
-              <span>{formattedTime}</span>
-            </div>
-
-            <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-900'}`}>
-                {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
-              </button>
-
-              {showProfileCard && (
-                <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                    <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      {(user?.username || 'AD').substring(0, 2).toUpperCase()}
-                    </div>
-                    <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || 'Admin'}</h4>
-                      <p className="text-sm text-gray-400 truncate">{user?.email || 'admin@detmoldpackaging.com'}</p>
-                      <span className="inline-block mt-1 px-2 py-0.5 bg-blue-900/50 text-blue-300 text-xs font-semibold rounded">{user?.role || 'Administrator'}</span>
-                    </div>
-                  </div>
-                  <div className="pt-2 space-y-1">
-                    <button onClick={() => { setShowProfileCard(false); changePage?.('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
-                      <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
-                    </button>
-                    <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center px-6 h-20">
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img 
-                src="/images/logo.png" 
-                alt="Detpak Logo" 
-                className="h-12 w-auto object-contain" 
-              />
-            </div>            
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className="bg-[#004797] text-white px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all shadow-xs">Dashboard</button>
-              <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
-              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-            </nav>
-          </div>
-        </div>
-      </header>
-      
-      {/* BODY */}
-      <div className="flex flex-1 overflow-hidden">
-        
-        {/* SIDEBAR */}
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${
-          isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'
-        }`}>
-          <nav className="flex flex-col gap-2 px-4">
-            <div>
-              <button 
-                onClick={() => {
-                  if (activePage === 'dashboard') {
-                    setIsDashboardMenuOpen((prev) => !prev);
-                  } else {
-                    changePage && changePage('dashboard');
-                    setIsDashboardMenuOpen(true);
-                  }
-                }} 
-                className={`w-full flex items-center justify-between px-4 py-3 text-sm font-bold rounded-xl transition-colors text-left cursor-pointer ${
-                  activePage === 'dashboard' 
-                    ? 'bg-[#004797] text-white' 
-                    : isDarkMode 
-                      ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white' 
-                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <i className="fa-solid fa-border-all w-5 text-lg"></i> Dashboard
-                </div>
-                <i className={`fa-solid fa-chevron-${isDashboardMenuOpen ? 'down' : 'right'} text-xs transition-transform`}></i>
-              </button>
-
-              {activePage === 'dashboard' && isDashboardMenuOpen && (
-                <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
-                  {dashboardTabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
-                        activeTab === tab.id
-                          ? isDarkMode ? 'text-slate-200 bg-slate-800/50' : 'text-gray-800 bg-gray-100'
-                          : isDarkMode ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100'
-                      }`}
-                    >
-                      <i className={`fa-solid ${tab.icon} w-4 text-center`}></i> {tab.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <button onClick={() => changePage && changePage('suppliers')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'suppliers' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
-              <i className="fa-solid fa-users w-5 text-lg"></i> Suppliers
-            </button>
-            <button onClick={() => changePage && changePage('purchaseOrders')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'purchaseOrders' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
-              <i className="fa-solid fa-cart-shopping w-5 text-lg"></i> Purchase Orders
-            </button>
-            <button onClick={() => changePage && changePage('analytics')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'analytics' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
-              <i className="fa-solid fa-chart-line w-5 text-lg"></i> Analytics
-            </button>
-            <button onClick={() => changePage && changePage('report')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'report' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
-              <i className="fa-solid fa-file-lines w-5 text-lg"></i> Report
-            </button>
-            <button onClick={() => changePage && changePage('settings')} className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${activePage === 'settings' ? 'bg-[#004797] text-white font-bold' : isDarkMode ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'}`}>
-              <i className="fa-solid fa-gear w-5 text-lg"></i> Settings
-            </button>
-
-            {canManageUsers && (
-              <button
-                onClick={() => changePage && changePage('userManagement')}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  activePage === 'userManagement' 
-                    ? 'bg-[#004797] text-white font-bold' 
-                    : isDarkMode
-                      ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
-                      : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
-                }`}
-              >
-                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
-              </button>
-            )}
-          </nav>
-        </aside>
-
-        {/* MAIN CONTENT */}
-        <main className="flex-1 overflow-y-auto p-8 space-y-6">
+      <AppLayout
+        activePage={activePage}
+        changePage={changePage}
+        onLogout={onLogout}
+        isDarkMode={isDarkMode}
+        setIsDarkMode={setIsDarkMode}
+        submenu={{
+          page: 'dashboard',
+          open: isDashboardMenuOpen,
+          onToggle: () => setIsDashboardMenuOpen((prev) => !prev),
+          items: dashboardTabs,
+          activeId: activeTab,
+          onSelect: setActiveTab,
+        }}
+      >
+        <div className="space-y-6">
           
           {/* WELCOME BANNER: hanya tampil di tab Overview, pakai font Poppins */}
           {activeTab === 'overview' && (
-          <div className="relative overflow-hidden rounded-2xl shadow-xs bg-[#00306B] min-h-[240px]" style={{ fontFamily: "'Poppins', sans-serif" }}>
-            {/* Foto Detpak: background-image + cover, dijamin selalu menutup penuh kotaknya tanpa celah/garis nyempil */}
-            <div
-              className="hidden sm:block absolute inset-0 pointer-events-none"
+          <div className="relative overflow-hidden rounded-2xl shadow-xs bg-[#00306B] h-[244px] shrink-0" style={{ fontFamily: "'Poppins', sans-serif" }}>
+            {/* Foto Detpak: ukuran DITETAPKAN (1270px, sama seperti tampilan default) dan menempel di kanan,
+                jadi tidak membesar/mengecil saat lebar layar atau isi halaman berubah. Sisi kiri foto memudar ke biru. */}
+            <img
+              src="/images/bg5.jpeg"
+              alt=""
+              draggable={false}
+              className="hidden sm:block absolute right-0 bottom-[-14px] w-[1270px] max-w-none h-auto min-h-[258px] object-cover object-right-bottom pointer-events-none select-none"
               style={{
-                backgroundImage: "url('/images/bg5.jpeg')",
-                backgroundSize: 'cover',
-                backgroundPosition: 'right 0px bottom -14px',
-                backgroundRepeat: 'no-repeat',
+                WebkitMaskImage: 'linear-gradient(90deg, transparent 0%, #000 35%)',
+                maskImage: 'linear-gradient(90deg, transparent 0%, #000 35%)',
               }}
-            ></div>
+            />
             {/* Overlay gradasi biru: Pekat di kiri untuk teks, melebur mulus ke gambar di kanan */}
             <div
               className="absolute inset-0 pointer-events-none"
@@ -1768,7 +1595,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
             <div className="relative z-10 p-7">
               <p className="text-blue-200 text-sm font-normal mb-0.5 tracking-wide">Welcome to</p>
-              <h2 className="text-blue-50 text-2xl sm:text-[28px] font-medium mb-1.5 leading-tight tracking-normal">Detmold Smart Procurement Portal</h2>
+              <h2 className="text-blue-50 text-2xl sm:text-[28px] font-medium mb-1.5 leading-tight tracking-normal">Detpak Smart Procurement Portal</h2>
               <p className="text-blue-100/90 text-sm font-light mb-5 tracking-wide">Digital. Efficient. Compliant. Sustainable.</p>
               <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
                 {[
@@ -2000,8 +1827,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
           )}
 
-        </main>
-      </div>
+        </div>
+      </AppLayout>
 
       {showPendingModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
@@ -2048,6 +1875,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       )}
 
       {renderCategoryParetoModal()}
-    </div>
+    </>
   );
 }

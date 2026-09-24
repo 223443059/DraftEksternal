@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
 import { API_ENDPOINTS } from '../utils/api.config';
+import AppLayout from './AppLayout'; // Pastikan path ini sesuai dengan struktur folder Anda
 
 const usdFormatter = new Intl.NumberFormat('en-US', { 
   style: 'currency', 
@@ -236,6 +237,7 @@ const getEmptyForm = () => ({
   supplier: '',
   localImport: 'Local'
 });
+
 export default function PurchaseOrders({ 
   changePage, 
   onLogout, 
@@ -251,7 +253,6 @@ export default function PurchaseOrders({
   const [isLoadingOrders, setIsLoadingOrders] = useState(true);
   const [dbSuppliers, setDbSuppliers] = useState([]);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [showProfileCard, setShowProfileCard] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   
   // State Filter Year & Month
@@ -263,7 +264,6 @@ export default function PurchaseOrders({
   const [editingId, setEditingId] = useState(null);
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const [printOrder, setPrintOrder] = useState(null);
-  const [formattedTime, setFormattedTime] = useState('');
   
   // State Upload Progress & Loading
   const [isUploading, setIsUploading] = useState(false);
@@ -276,7 +276,6 @@ export default function PurchaseOrders({
   const [isPoMenuExpanded, setIsPoMenuExpanded] = useState(true);
   const [showUploadView, setShowUploadView] = useState(false);
 
-  const profileRef = useRef(null);
   const supplierDropdownRef = useRef(null);
   const [formData, setFormData] = useState(getEmptyForm);
 
@@ -284,20 +283,10 @@ export default function PurchaseOrders({
   useEffect(() => {
     fetchOrdersFromBackend();
     fetchSuppliersFromBackend();
-
-    const timer = setInterval(() => {
-      const now = new Date();
-      setFormattedTime(now.toLocaleTimeString('en-US', { hour12: false }));
-    }, 1000);
-
-    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (profileRef.current && !profileRef.current.contains(e.target)) {
-        setShowProfileCard(false);
-      }
       if (supplierDropdownRef.current && !supplierDropdownRef.current.contains(e.target)) {
         setShowSupplierDropdown(false);
       }
@@ -676,9 +665,6 @@ export default function PurchaseOrders({
       return;
     }
 
-    // CEK DUPLIKAT: kombinasi PO Number + PO Line + Pack Slip harus unik.
-    // Dikecualikan baris yang sedang diedit sendiri (editingId), supaya edit tanpa
-    // ganti nilai-nilai itu tidak dianggap bentrok dengan dirinya sendiri.
     const candidateKey = rowKey({ poNumber, poLine: formData.poLine, packSlip: formData.packSlip });
     const isDuplicate = orders.some((o) => o.id !== editingId && rowKey(o) === candidateKey);
     if (isDuplicate) {
@@ -753,11 +739,6 @@ export default function PurchaseOrders({
   };
 
   const handleTriggerPrint = (order) => setPrintOrder(order);
-  const handleNavigate = (p) => changePage?.(p);
-  const handleLogout = () => onLogout?.();
-
-  const printRows = printOrder ? orders.filter((r) => r.poNumber === printOrder.poNumber) : [];
-  const printTotal = printRows.reduce((sum, r) => sum + r.amount, 0);
 
   const inputCls = `w-full px-2.5 py-1.5 border rounded ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-200'}`;
 
@@ -786,12 +767,34 @@ export default function PurchaseOrders({
     { name: 'localImport', label: 'Local/Import', type: 'select', options: ['Local', 'Import'] }
   ];
 
-  return (
-    <div className={`h-screen overflow-hidden flex flex-col transition-colors duration-200 ${isDarkMode ? 'bg-[#0F172A] text-slate-100' : 'bg-[#EDF2F7] text-gray-800'}`}>
+  // Daftar item submenu yang sesuai dengan izin (permission) pengguna
+  const submenuItems = [
+    { id: 'list', label: 'PO Transaction List', icon: 'fa-list-ul' }
+  ];
+  
+  if (canManageUsers) {
+    submenuItems.push({ id: 'upload', label: 'Excel Upload', icon: 'fa-file-excel' });
+  }
 
+  return (
+    <AppLayout
+      activePage="purchaseOrders"
+      changePage={changePage}
+      onLogout={onLogout}
+      isDarkMode={isDarkMode}
+      setIsDarkMode={setIsDarkMode}
+      submenu={{
+        page: 'purchaseOrders',
+        open: isPoMenuExpanded,
+        onToggle: () => setIsPoMenuExpanded(!isPoMenuExpanded),
+        items: submenuItems,
+        activeId: showUploadView ? 'upload' : 'list',
+        onSelect: (id) => setShowUploadView(id === 'upload')
+      }}
+    >
       {/* TOP LOADING BAR */}
       {isLoadingOrders && (
-        <div className="fixed top-0 left-0 w-full h-[3px] z-[100] bg-transparent overflow-hidden">
+        <div className="fixed top-0 left-0 w-full h-[3px] z-[100] bg-transparent overflow-hidden pointer-events-none">
           <style>{`
             @keyframes dashboardTopLoadingBar {
               0% { left: -40%; width: 40%; opacity: 1; }
@@ -824,570 +827,347 @@ export default function PurchaseOrders({
         </div>
       )}
 
-      {/* HEADER UTAMA */}
-      <header className={`flex flex-col border-b shrink-0 relative z-30 w-full transition-colors ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-white border-gray-200'}`}>
-        <div className={`flex items-center justify-between px-6 h-20 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-10 h-full">
-            <div className="flex flex-col justify-center select-none cursor-pointer pt-1" onClick={() => changePage?.('dashboard')}>
-              <img src="/images/logo.png" alt="Detpak Logo" className="h-12 w-auto object-contain" />
-            </div>            
-            <nav className="hidden md:flex items-center h-full gap-3 text-lg font-semibold">
-              <button onClick={() => changePage?.('dashboard')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Dashboard</button>
-              <button onClick={() => changePage?.('marketPrice')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Market Price</button>
-              <button onClick={() => changePage?.('supplierEvaluation')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>Supplier Evaluation</button>
-              <button onClick={() => changePage?.('otd')} className={`px-4 py-2.5 rounded-xl flex items-center cursor-pointer transition-all ${isDarkMode ? 'text-slate-300 hover:bg-slate-800 hover:text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'}`}>OTD Performance</button>
-            </nav>
-          </div>
-
-          <div className="flex items-center gap-6">
-            <button 
-              onClick={() => setIsDarkMode(!isDarkMode)} 
-              className={`text-xl cursor-pointer transition-colors ${isDarkMode ? 'text-amber-400 hover:text-amber-300' : 'text-gray-600 hover:text-gray-900'}`} 
-              title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              <i className={`fa-solid ${isDarkMode ? 'fa-sun' : 'fa-moon'}`}></i>
-            </button>
-            
-            <div className={`flex items-center gap-2 border px-3.5 py-2 rounded-lg text-base font-semibold ${isDarkMode ? 'bg-[#1E293B] text-slate-200 border-slate-700' : 'bg-[#F3F4F6] text-[#4A5568] border-gray-200'}`}>
-              <i className="fa-regular fa-clock text-blue-500"></i>
-              <span>{formattedTime}</span>
+      {/* BODY CONTAINER WRAPPER */}
+      <div className="space-y-6 w-full h-full flex flex-col">
+        {showUploadView ? (
+          <div className="w-full max-w-6xl mx-auto flex flex-col h-full flex-1">
+            <div className="mb-6">
+              <h1 className={`text-[28px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Excel Upload</h1>
+              <p className={`text-[15px] mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Import Purchase Order data from large Excel files.</p>
             </div>
+            
+            <div className={`flex-1 rounded-2xl border shadow-sm p-10 flex flex-col items-center justify-center text-center ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+              <div className="w-16 h-16 rounded-full bg-[#E8F5E9] text-[#2E7D32] flex items-center justify-center mb-6">
+                <i className="fa-solid fa-file-excel text-3xl"></i>
+              </div>
+              
+              <h2 className={`text-xl font-bold mb-3 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload Purchase Order Data via Excel</h2>
+              <p className={`text-sm max-w-lg mb-6 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                The system has been optimized to process large Excel files (&gt; 5 MB).
+              </p>
 
-            <div className="relative" ref={profileRef}>
-              <button onClick={() => setShowProfileCard(!showProfileCard)} className={`flex items-center gap-1.5 transition-colors focus:outline-none cursor-pointer font-bold text-lg ${isDarkMode ? 'text-slate-200 hover:text-white' : 'text-gray-700 hover:bg-gray-50'}`}>
-                {user?.username || 'Admin'} <i className={`fa-solid fa-chevron-down text-[12px] ml-1 transition-transform duration-200 ${showProfileCard ? 'rotate-180' : ''}`}></i>
-              </button>              
-              {showProfileCard && (
-                <div className={`absolute right-0 mt-3 w-64 border rounded-xl shadow-xl p-4 z-50 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  <div className={`flex items-center gap-3 pb-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                    <div className="w-12 h-12 rounded-full bg-[#004797] text-white flex items-center justify-center font-bold text-base uppercase shrink-0">
-                      {(user?.username || 'AD').slice(0, 2)}
-                    </div>
-                    <div className="overflow-hidden">
-                      <h4 className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{user?.username || '-'}</h4>
-                      <p className={`text-sm truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user?.email || '-'}</p>
-                      <span className={`inline-block mt-1 px-2 py-0.5 text-xs font-semibold rounded ${isDarkMode ? 'bg-blue-900/50 text-blue-300' : 'bg-blue-50 text-[#004797]'}`}>{user?.role || '-'}</span>
-                    </div>
+              {isUploading && (
+                <div className="w-full max-w-md mb-6">
+                  <div className="flex justify-between text-xs font-bold mb-2">
+                    <span>Upload Progress...</span>
+                    <span>{uploadProgress}%</span>
                   </div>
-                  <div className="pt-2 space-y-1">
-                    <button onClick={() => { setShowProfileCard(false); changePage?.('settings'); }} className={`w-full text-left px-3 py-2 text-base rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-50'}`}>
-                      <i className="fa-solid fa-user-gear text-gray-400 text-sm"></i> Manage Profile
-                    </button>
-                    <button onClick={() => { setShowProfileCard(false); handleLogout(); }} className="w-full text-left px-3 py-2 text-base text-red-500 hover:bg-red-500/10 rounded-lg flex items-center gap-2.5 transition-colors font-medium cursor-pointer">
-                      <i className="fa-solid fa-arrow-right-from-bracket text-red-500 text-sm"></i> Logout
-                    </button>
+                  <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                    <div className="bg-[#00A651] h-3 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
                   </div>
                 </div>
               )}
+              
+              <label className={`cursor-pointer ${isUploading ? 'bg-gray-400 pointer-events-none' : 'bg-[#00A651] hover:bg-[#008F45]'} text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center gap-2 mb-6`}>
+                <i className="fa-solid fa-upload"></i> {isUploading ? 'Processing File...' : 'Choose Excel File'}
+                <input type="file" accept=".xlsx, .xls" disabled={isUploading} onChange={handleFileUpload} className="hidden" />
+              </label>
+              
+              <button 
+                onClick={() => setShowUploadView(false)}
+                className={`text-sm font-semibold flex items-center gap-2 transition-colors ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-[#004797] hover:text-blue-700'}`}
+              >
+                <i className="fa-solid fa-arrow-left"></i> Back to PO Transaction List
+              </button>
             </div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="flex justify-between items-center">
+              <div>
+                <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Purchase Orders</h1>
+                <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Manage purchasing transactions and track order status.</p>
+              </div>
+            </div>
 
-        <div className={`px-6 py-5 flex flex-col justify-center ${isDarkMode ? 'bg-[#0F172A]' : 'bg-white'}`}>
-          <h2 className="text-[#DE5B54] text-[26px] font-bold tracking-[0.08em] uppercase mb-1.5 leading-none" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Packaging
-          </h2>
-          <p className={`text-[14px] font-bold tracking-[0.1em] uppercase leading-none ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`} style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-            Detmold Group <span className={`mx-1.5 font-light ${isDarkMode ? 'text-slate-700' : 'text-gray-300'}`}>|</span> PT Detpak Indonesia
-          </p>
-        </div>
-      </header>
-      
-      {/* BODY CONTAINER */}
-      <div className="flex flex-1 overflow-hidden">
-        <aside className={`w-64 border-r flex flex-col py-6 shrink-0 z-20 transition-colors duration-200 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-          <nav className="flex flex-col gap-2 px-4">
-            {[
-              { id: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
-              { id: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => handleNavigate(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  isDarkMode
-                    ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
-                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
-                }`}
-              >
-                <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
-              </button>
-            ))}
-
-            <div>
-              <button
-                onClick={() => setIsPoMenuExpanded(!isPoMenuExpanded)}
-                className={`w-full flex items-center justify-between px-4 py-3 text-sm font-bold rounded-xl transition-colors text-left cursor-pointer ${
-                  isPoMenuExpanded
-                    ? 'bg-[#004797] text-white'
-                    : isDarkMode
-                    ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
-                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <i className="fa-solid fa-file-lines w-5 text-lg"></i> Purchase Orders
+            {/* SUMMARY STAT CARDS */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+                  <i className="fa-regular fa-file-lines text-xl"></i>
                 </div>
-                <i className={`fa-solid fa-chevron-${isPoMenuExpanded ? 'down' : 'right'} text-xs transition-transform`}></i>
-              </button>
+                <div className="overflow-hidden">
+                  <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Purchase Orders</p>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{stats.totalPO}</span>
+                    <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Orders ({stats.totalLines} lines)</span>
+                  </div>
+                </div>
+              </div>
 
-              {isPoMenuExpanded && (
-                <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
-                  <button
-                    onClick={() => {
-                      setShowUploadView(false);
-                      handleNavigate('purchaseOrders');
-                    }}
-                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
-                      isDarkMode && !showUploadView ? 'text-slate-200 bg-slate-800/50' : !showUploadView ? 'text-gray-800 bg-gray-100' : 'text-gray-500'
-                    }`}
-                  >
-                    <i className="fa-solid fa-list-ul w-4 text-center"></i> PO Transaction List
-                  </button>
+              <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="w-12 h-12 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
+                  <i className="fa-solid fa-dollar-sign text-xl"></i>
+                </div>
+                <div className="overflow-hidden">
+                  <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (USD)</p>
+                  <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{usdFormatter.format(stats.totalUSD)}</span>
+                </div>
+              </div>
 
-                  {canManageUsers && (
-                    <button
-                      onClick={() => setShowUploadView(true)}
-                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
-                        isDarkMode && showUploadView ? 'text-slate-200 bg-slate-800/50' : showUploadView ? 'text-gray-800 bg-gray-100' : 'text-gray-500'
+              <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className="w-12 h-12 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0">
+                  <i className="fa-solid fa-money-bill-wave text-xl"></i>
+                </div>
+                <div className="overflow-hidden">
+                  <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (IDR)</p>
+                  <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{idrFormatter.format(stats.totalIDR)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* TABLE AREA WITH YEAR & MONTH FILTERS */}
+            <div className={`border shadow-xs rounded-2xl p-6 overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
+                <div className="flex items-center gap-3">
+                  <h2 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>PO Transaction List</h2>
+                </div>
+
+                {/* FILTERS CONTAINER: YEAR, MONTH, SEARCH, & RESET */}
+                <div className="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto flex-wrap">
+                  {/* FILTER YEAR */}
+                  <div className="w-full sm:w-auto">
+                    <select
+                      value={selectedYear}
+                      onChange={(e) => setSelectedYear(e.target.value)}
+                      className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
+                        isDarkMode 
+                          ? 'bg-[#0F172A] border-slate-700 text-white' 
+                          : 'bg-gray-50 border-gray-200 text-gray-900'
                       }`}
                     >
-                      <i className="fa-solid fa-file-excel w-4 text-center"></i> Excel Upload
+                      <option value="All">All Years</option>
+                      {availableYears.map((yr) => (
+                        <option key={yr} value={yr}>{yr}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* FILTER MONTH */}
+                  <div className="w-full sm:w-auto">
+                    <select
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(e.target.value)}
+                      className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
+                        isDarkMode 
+                          ? 'bg-[#0F172A] border-slate-700 text-white' 
+                          : 'bg-gray-50 border-gray-200 text-gray-900'
+                      }`}
+                    >
+                      {MONTH_OPTIONS.map((m) => (
+                        <option key={m.value} value={m.value}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* SEARCH INPUT */}
+                  <div className="relative w-full sm:w-64">
+                    <input 
+                      type="text" 
+                      placeholder="Search PO, Supplier, Part..." 
+                      value={searchTerm} 
+                      onChange={e => setSearchTerm(e.target.value)}
+                      className={`w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 ${
+                        isDarkMode 
+                          ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' 
+                          : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'
+                      }`} 
+                    />
+                    <i className="fa-solid fa-magnifying-glass absolute left-3 top-3 text-xs text-gray-400"></i>
+                  </div>
+
+                  {/* RESET FILTER BUTTON */}
+                  {(selectedYear !== 'All' || selectedMonth !== 'All' || searchTerm !== '') && (
+                    <button
+                      onClick={() => {
+                        setSelectedYear('All');
+                        setSelectedMonth('All');
+                        setSearchTerm('');
+                      }}
+                      className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                        isDarkMode 
+                          ? 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700' 
+                          : 'border-gray-200 bg-gray-100 text-gray-600 hover:text-gray-900 hover:bg-gray-200'
+                      }`}
+                      title="Reset Filters"
+                    >
+                      <i className="fa-solid fa-rotate-left"></i> Reset
                     </button>
                   )}
                 </div>
-              )}
-            </div>
-
-            {[
-              { id: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
-              { id: 'report', label: 'Report', icon: 'fa-file-lines' },
-              { id: 'settings', label: 'Settings', icon: 'fa-gear' },
-            ].map((item) => (
-              <button
-                key={item.id}
-                onClick={() => handleNavigate(item.id)}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  isDarkMode
-                    ? 'text-slate-300 hover:bg-slate-800/80 hover:text-white font-medium'
-                    : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 font-medium'
-                }`}
-              >
-                <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
-              </button>
-            ))}
-
-            {canManageUsers && (
-              <button
-                onClick={() => handleNavigate('userManagement')}
-                className={`w-full flex items-center gap-3 px-4 py-3 text-sm rounded-xl transition-colors text-left cursor-pointer ${
-                  isDarkMode
-                    ? 'text-amber-400 hover:bg-slate-800/80 hover:text-amber-300 font-medium'
-                    : 'text-amber-600 hover:bg-amber-50 hover:text-amber-700 font-medium'
-                }`}
-              >
-                <i className="fa-solid fa-user-shield w-5 text-lg"></i> User Management
-              </button>
-            )}
-          </nav>
-        </aside>
-
-        {/* MAIN CONTENT */}
-        <main className="flex-1 min-w-0 overflow-y-auto p-8 space-y-6">          
-          {showUploadView ? (
-            <div className="w-full max-w-6xl mx-auto flex flex-col h-full">
-              <div className="mb-6">
-                <h1 className={`text-[28px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Excel Upload</h1>
-                <p className={`text-[15px] mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Import Purchase Order data from large Excel files.</p>
-              </div>
-              
-              <div className={`flex-1 rounded-2xl border shadow-sm p-10 flex flex-col items-center justify-center text-center ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <div className="w-16 h-16 rounded-full bg-[#E8F5E9] text-[#2E7D32] flex items-center justify-center mb-6">
-                  <i className="fa-solid fa-file-excel text-3xl"></i>
-                </div>
-                
-                <h2 className={`text-xl font-bold mb-3 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Upload Purchase Order Data via Excel</h2>
-                <p className={`text-sm max-w-lg mb-6 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                  The system has been optimized to process large Excel files (&gt; 5 MB).
-                </p>
-
-                {isUploading && (
-                  <div className="w-full max-w-md mb-6">
-                    <div className="flex justify-between text-xs font-bold mb-2">
-                      <span>Upload Progress...</span>
-                      <span>{uploadProgress}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                      <div className="bg-[#00A651] h-3 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
-                    </div>
-                  </div>
-                )}
-                
-                <label className={`cursor-pointer ${isUploading ? 'bg-gray-400 pointer-events-none' : 'bg-[#00A651] hover:bg-[#008F45]'} text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center gap-2 mb-6`}>
-                  <i className="fa-solid fa-upload"></i> {isUploading ? 'Processing File...' : 'Choose Excel File'}
-                  <input type="file" accept=".xlsx, .xls" disabled={isUploading} onChange={handleFileUpload} className="hidden" />
-                </label>
-                
-                <button 
-                  onClick={() => setShowUploadView(false)}
-                  className={`text-sm font-semibold flex items-center gap-2 transition-colors ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-[#004797] hover:text-blue-700'}`}
-                >
-                  <i className="fa-solid fa-arrow-left"></i> Back to PO Transaction List
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="flex justify-between items-center">
-                <div>
-                  <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Purchase Orders</h1>
-                  <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Manage purchasing transactions and track order status.</p>
-                </div>
               </div>
 
-              {/* SUMMARY STAT CARDS */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div className="w-12 h-12 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
-                    <i className="fa-regular fa-file-lines text-xl"></i>
-                  </div>
-                  <div className="overflow-hidden">
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Purchase Orders</p>
-                    <div className="flex items-baseline gap-1.5">
-                      <span className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{stats.totalPO}</span>
-                      <span className={`text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Orders ({stats.totalLines} lines)</span>
-                    </div>
-                  </div>
-                </div>
+              <div className="w-full overflow-x-auto pb-4">
+                <table className="w-full min-w-max text-left text-sm whitespace-nowrap">
+                  <thead>
+                    <tr className={`border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A] text-slate-400' : 'border-gray-200 bg-gray-50/50 text-gray-500'}`}>
+                      <th className="py-3 font-semibold px-4">Main Class</th>
+                      <th className="py-3 font-semibold px-4">Class</th>
+                      <th className="py-3 font-semibold px-4">Product Group</th>
+                      <th className="py-3 font-semibold px-4">Sub Category</th>
+                      <th className="py-3 font-semibold px-4">Type</th>
+                      <th className="py-3 font-semibold px-4">Pack Slip</th>
+                      <th className="py-3 font-semibold px-4">Date</th>
+                      <th className="py-3 font-semibold px-4">PO</th>
+                      <th className="py-3 font-semibold px-4 text-center">PO Line</th>
+                      <th className="py-3 font-semibold px-4">PO Rel</th>
+                      <th className="py-3 font-semibold px-4">Part</th>
+                      <th className="py-3 font-semibold px-4 text-left">Description</th>
+                      <th className="py-3 font-semibold px-4 text-center">Qty Received</th>
+                      <th className="py-3 font-semibold px-4 text-center">UOM</th>
+                      <th className="py-3 font-semibold px-4 text-right">Price</th>
+                      <th className="py-3 font-semibold px-4 text-right">Amount</th>
+                      <th className="py-3 font-semibold px-4 text-center">Year</th>
+                      <th className="py-3 font-semibold px-4 text-right">Spending IDR</th>
+                      <th className="py-3 font-semibold px-4 text-right">Spending USD</th>
+                      <th className="py-3 font-semibold px-4 text-center">Currency</th>
+                      <th className="py-3 font-semibold px-4">Supplier</th>
+                      <th className="py-3 font-semibold px-4 text-center">Local/Import</th>
+                      <th className={`py-3 font-semibold px-4 text-center sticky right-0 z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
+                    {currentPaginatedRows.length === 0 ? (
+                      <tr><td colSpan="23" className="py-8 text-center text-gray-400">No PO data available.</td></tr>
+                    ) : (
+                      currentPaginatedRows.map((row) => (
+                        <tr key={row.id ?? `${row.poNumber}-${row.poLine}-${row.packSlip}`} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                          <td className="py-3 px-4">{row.mainClass || '-'}</td>
+                          <td className="py-3 px-4">{row.classCode || '-'}</td>
+                          <td className="py-3 px-4">{row.productGroup || '-'}</td>
+                          <td className="py-3 px-4">{row.subCategory || '-'}</td>
+                          <td className="py-3 px-4">{row.type || '-'}</td>
+                          <td className="py-3 px-4">{row.packSlip || '-'}</td>
+                          <td className="py-3 px-4">{row.receiptDate || '-'}</td>
+                          <td className="py-3 px-4 font-bold text-red-500 cursor-pointer hover:underline">{row.poNumber}</td>
+                          <td className="py-3 px-4 text-center">{row.poLine || '-'}</td>
+                          <td className="py-3 px-4">{row.poRel || '-'}</td>
+                          <td className="py-3 px-4">{row.part || '-'}</td>
+                          <td className="py-3 px-4 max-w-[200px] truncate" title={row.description}>{row.description || '-'}</td>
+                          <td className="py-3 px-4 text-center">{qtyFormatter.format(row.qtyReceived)}</td>
+                          <td className="py-3 px-4 text-center">{row.uom || '-'}</td>
+                          <td className="py-3 px-4 text-right">{moneyFormatter.format(row.price)}</td>
+                          <td className="py-3 px-4 text-right font-semibold">{moneyFormatter.format(row.amount)}</td>
+                          <td className="py-3 px-4 text-center">{row.year || '-'}</td>
+                          <td className="py-3 px-4 text-right">{idrFormatter.format(row.spendingIdr)}</td>
+                          <td className="py-3 px-4 text-right">{usdFormatter.format(row.spendingUsd)}</td>
+                          <td className="py-3 px-4 text-center">{row.currency || '-'}</td>
+                          <td className="py-3 px-4 font-bold">{row.supplier || '-'}</td>
+                          <td className="py-3 px-4 text-center">{row.localImport || '-'}</td>
 
-                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div className="w-12 h-12 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
-                    <i className="fa-solid fa-dollar-sign text-xl"></i>
-                  </div>
-                  <div className="overflow-hidden">
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (USD)</p>
-                    <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{usdFormatter.format(stats.totalUSD)}</span>
-                  </div>
-                </div>
-
-                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div className="w-12 h-12 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0">
-                    <i className="fa-solid fa-money-bill-wave text-xl"></i>
-                  </div>
-                  <div className="overflow-hidden">
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending (IDR)</p>
-                    <span className={`text-xl font-bold truncate block ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{idrFormatter.format(stats.totalIDR)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* TABLE AREA WITH YEAR & MONTH FILTERS */}
-              <div className={`border shadow-xs rounded-2xl p-6 overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
-                  <div className="flex items-center gap-3">
-                    <h2 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-800'}`}>PO Transaction List</h2>
-                  </div>
-
-                  {/* FILTERS CONTAINER: YEAR, MONTH, SEARCH, & RESET */}
-                  <div className="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto flex-wrap">
-                    {/* FILTER YEAR */}
-                    <div className="w-full sm:w-auto">
-                      <select
-                        value={selectedYear}
-                        onChange={(e) => setSelectedYear(e.target.value)}
-                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
-                          isDarkMode 
-                            ? 'bg-[#0F172A] border-slate-700 text-white' 
-                            : 'bg-gray-50 border-gray-200 text-gray-900'
-                        }`}
-                      >
-                        <option value="All">All Years</option>
-                        {availableYears.map((yr) => (
-                          <option key={yr} value={yr}>{yr}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* FILTER MONTH */}
-                    <div className="w-full sm:w-auto">
-                      <select
-                        value={selectedMonth}
-                        onChange={(e) => setSelectedMonth(e.target.value)}
-                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 cursor-pointer font-medium ${
-                          isDarkMode 
-                            ? 'bg-[#0F172A] border-slate-700 text-white' 
-                            : 'bg-gray-50 border-gray-200 text-gray-900'
-                        }`}
-                      >
-                        {MONTH_OPTIONS.map((m) => (
-                          <option key={m.value} value={m.value}>{m.label}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {/* SEARCH INPUT */}
-                    <div className="relative w-full sm:w-64">
-                      <input 
-                        type="text" 
-                        placeholder="Search PO, Supplier, Part..." 
-                        value={searchTerm} 
-                        onChange={e => setSearchTerm(e.target.value)}
-                        className={`w-full pl-9 pr-4 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500/50 ${
-                          isDarkMode 
-                            ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' 
-                            : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'
-                        }`} 
-                      />
-                      <i className="fa-solid fa-magnifying-glass absolute left-3 top-3 text-xs text-gray-400"></i>
-                    </div>
-
-                    {/* RESET FILTER BUTTON */}
-                    {(selectedYear !== 'All' || selectedMonth !== 'All' || searchTerm !== '') && (
-                      <button
-                        onClick={() => {
-                          setSelectedYear('All');
-                          setSelectedMonth('All');
-                          setSearchTerm('');
-                        }}
-                        className={`w-full sm:w-auto px-3 py-2 border rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
-                          isDarkMode 
-                            ? 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700' 
-                            : 'border-gray-200 bg-gray-100 text-gray-600 hover:text-gray-900 hover:bg-gray-200'
-                        }`}
-                        title="Reset Filters"
-                      >
-                        <i className="fa-solid fa-rotate-left"></i> Reset
-                      </button>
+                          <td className={`py-3 px-4 text-center sticky right-0 z-10 ${isDarkMode ? 'bg-[#1E293B] hover:bg-slate-800' : 'bg-white hover:bg-gray-50'}`}>
+                            <div className="flex items-center justify-center gap-2">
+                              <button onClick={() => handleTriggerPrint(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Print PO">
+                                <i className="fa-solid fa-print"></i>
+                              </button>
+                              {canManageUsers && (
+                                <>
+                                  <button onClick={() => handleEditClick(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Edit"><i className="fa-regular fa-pen-to-square"></i></button>
+                                  <button onClick={() => deletePO(row.id, row.poNumber)} className="text-gray-400 hover:text-red-500 p-1 cursor-pointer" title="Delete"><i className="fa-regular fa-trash-can"></i></button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
                     )}
-                  </div>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* BOTTOM PAGINATION CONTROLS */}
+              <div className={`mt-4 pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-4 text-sm ${isDarkMode ? 'border-slate-800 text-slate-400' : 'border-gray-200 text-gray-600'}`}>
+                <div>
+                  Showing <span className="font-bold text-[#004797]">{filteredRows.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, filteredRows.length)}</span> of total <span className="font-bold">{filteredRows.length}</span> rows
                 </div>
 
-                <div className="w-full overflow-x-auto pb-4">
-                  <table className="w-full min-w-max text-left text-sm whitespace-nowrap">
-                    <thead>
-                      <tr className={`border-b ${isDarkMode ? 'border-slate-800 bg-[#0F172A] text-slate-400' : 'border-gray-200 bg-gray-50/50 text-gray-500'}`}>
-                        <th className="py-3 font-semibold px-4">Main Class</th>
-                        <th className="py-3 font-semibold px-4">Class</th>
-                        <th className="py-3 font-semibold px-4">Product Group</th>
-                        <th className="py-3 font-semibold px-4">Sub Category</th>
-                        <th className="py-3 font-semibold px-4">Type</th>
-                        <th className="py-3 font-semibold px-4">Pack Slip</th>
-                        <th className="py-3 font-semibold px-4">Date</th>
-                        <th className="py-3 font-semibold px-4">PO</th>
-                        <th className="py-3 font-semibold px-4 text-center">PO Line</th>
-                        <th className="py-3 font-semibold px-4">PO Rel</th>
-                        <th className="py-3 font-semibold px-4">Part</th>
-                        <th className="py-3 font-semibold px-4 text-left">Description</th>
-                        <th className="py-3 font-semibold px-4 text-center">Qty Received</th>
-                        <th className="py-3 font-semibold px-4 text-center">UOM</th>
-                        <th className="py-3 font-semibold px-4 text-right">Price</th>
-                        <th className="py-3 font-semibold px-4 text-right">Amount</th>
-                        <th className="py-3 font-semibold px-4 text-center">Year</th>
-                        <th className="py-3 font-semibold px-4 text-right">Spending IDR</th>
-                        <th className="py-3 font-semibold px-4 text-right">Spending USD</th>
-                        <th className="py-3 font-semibold px-4 text-center">Currency</th>
-                        <th className="py-3 font-semibold px-4">Supplier</th>
-                        <th className="py-3 font-semibold px-4 text-center">Local/Import</th>
-                        <th className={`py-3 font-semibold px-4 text-center sticky right-0 z-10 shadow-[-4px_0_6px_-2px_rgba(0,0,0,0.05)] ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
-                      {currentPaginatedRows.length === 0 ? (
-                        <tr><td colSpan="23" className="py-8 text-center text-gray-400">No PO data available.</td></tr>
-                      ) : (
-                        currentPaginatedRows.map((row) => (
-                          <tr key={row.id ?? `${row.poNumber}-${row.poLine}-${row.packSlip}`} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                            <td className="py-3 px-4">{row.mainClass || '-'}</td>
-                            <td className="py-3 px-4">{row.classCode || '-'}</td>
-                            <td className="py-3 px-4">{row.productGroup || '-'}</td>
-                            <td className="py-3 px-4">{row.subCategory || '-'}</td>
-                            <td className="py-3 px-4">{row.type || '-'}</td>
-                            <td className="py-3 px-4">{row.packSlip || '-'}</td>
-                            <td className="py-3 px-4">{row.receiptDate || '-'}</td>
-                            <td className="py-3 px-4 font-bold text-red-500 cursor-pointer hover:underline">{row.poNumber}</td>
-                            <td className="py-3 px-4 text-center">{row.poLine || '-'}</td>
-                            <td className="py-3 px-4">{row.poRel || '-'}</td>
-                            <td className="py-3 px-4">{row.part || '-'}</td>
-                            <td className="py-3 px-4 max-w-[200px] truncate" title={row.description}>{row.description || '-'}</td>
-                            <td className="py-3 px-4 text-center">{qtyFormatter.format(row.qtyReceived)}</td>
-                            <td className="py-3 px-4 text-center">{row.uom || '-'}</td>
-                            <td className="py-3 px-4 text-right">{moneyFormatter.format(row.price)}</td>
-                            <td className="py-3 px-4 text-right font-semibold">{moneyFormatter.format(row.amount)}</td>
-                            <td className="py-3 px-4 text-center">{row.year || '-'}</td>
-                            <td className="py-3 px-4 text-right">{idrFormatter.format(row.spendingIdr)}</td>
-                            <td className="py-3 px-4 text-right">{usdFormatter.format(row.spendingUsd)}</td>
-                            <td className="py-3 px-4 text-center">{row.currency || '-'}</td>
-                            <td className="py-3 px-4 font-bold">{row.supplier || '-'}</td>
-                            <td className="py-3 px-4 text-center">{row.localImport || '-'}</td>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                    disabled={currentPage === 1}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
+                      currentPage === 1 
+                        ? 'opacity-40 cursor-not-allowed border-gray-300' 
+                        : isDarkMode ? 'border-slate-700 hover:bg-slate-800 text-white' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    <i className="fa-solid fa-chevron-left"></i> Previous
+                  </button>
 
-                            <td className={`py-3 px-4 text-center sticky right-0 z-10 ${isDarkMode ? 'bg-[#1E293B] hover:bg-slate-800' : 'bg-white hover:bg-gray-50'}`}>
-                              <div className="flex items-center justify-center gap-2">
-                                <button onClick={() => handleTriggerPrint(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Print PO">
-                                  <i className="fa-solid fa-print"></i>
-                                </button>
-                                {canManageUsers && (
-                                  <>
-                                    <button onClick={() => handleEditClick(row)} className="text-gray-400 hover:text-blue-500 p-1 cursor-pointer" title="Edit"><i className="fa-regular fa-pen-to-square"></i></button>
-                                    <button onClick={() => deletePO(row.id, row.poNumber)} className="text-gray-400 hover:text-red-500 p-1 cursor-pointer" title="Delete"><i className="fa-regular fa-trash-can"></i></button>
-                                  </>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                  <span className="px-3 py-1 text-xs font-semibold">
+                    Page {currentPage} of {totalPages}
+                  </span>
 
-                {/* BOTTOM PAGINATION CONTROLS */}
-                <div className={`mt-4 pt-4 border-t flex flex-col sm:flex-row items-center justify-between gap-4 text-sm ${isDarkMode ? 'border-slate-800 text-slate-400' : 'border-gray-200 text-gray-600'}`}>
-                  <div>
-                    Showing <span className="font-bold text-[#004797]">{filteredRows.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, filteredRows.length)}</span> of total <span className="font-bold">{filteredRows.length}</span> rows
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                      disabled={currentPage === 1}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
-                        currentPage === 1 
-                          ? 'opacity-40 cursor-not-allowed border-gray-300' 
-                          : isDarkMode ? 'border-slate-700 hover:bg-slate-800 text-white' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
-                      }`}
-                    >
-                      <i className="fa-solid fa-chevron-left"></i> Previous
-                    </button>
-
-                    <span className="px-3 py-1 text-xs font-semibold">
-                      Page {currentPage} of {totalPages}
-                    </span>
-
-                    <button
-                      onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                      disabled={currentPage === totalPages || totalPages === 0}
-                      className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
-                        currentPage === totalPages || totalPages === 0
-                          ? 'opacity-40 cursor-not-allowed border-gray-300' 
-                          : isDarkMode ? 'border-slate-700 hover:bg-slate-800 text-white' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
-                      }`}
-                    >
-                      Next <i className="fa-solid fa-chevron-right"></i>
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                    disabled={currentPage === totalPages || totalPages === 0}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors ${
+                      currentPage === totalPages || totalPages === 0
+                        ? 'opacity-40 cursor-not-allowed border-gray-300' 
+                        : isDarkMode ? 'border-slate-700 hover:bg-slate-800 text-white' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
+                    }`}
+                  >
+                    Next <i className="fa-solid fa-chevron-right"></i>
+                  </button>
                 </div>
               </div>
-            </>
-          )}
-        </main>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* MODAL FORM EDIT / ADD PO */}
+      {/* MODAL UNTUK ADD / EDIT PO */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-sm">
-          <form onSubmit={handleSubmit} className={`rounded-xl max-w-5xl w-full flex flex-col shadow-2xl border max-h-[96vh] ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-800'}`}>
-            <div className={`px-4 py-3 border-b flex justify-between items-center rounded-t-xl shrink-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-slate-50 border-gray-200'}`}>
-              <div className="flex items-center gap-3 flex-wrap">
-                <span className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>PO {formData.poNumber}</span>
-                {formData.poLine !== '' && (
-                  <span className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Line {formData.poLine}</span>
-                )}
-              </div>
-              <button type="button" onClick={closeModal} className="text-gray-400 hover:text-red-500 text-lg">
-                <i className="fa-solid fa-xmark"></i>
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className={`w-full max-w-4xl rounded-2xl shadow-xl overflow-hidden flex flex-col max-h-[90vh] ${isDarkMode ? 'bg-[#1E293B] text-slate-100' : 'bg-white text-gray-800'}`}>
+            <div className={`px-6 py-4 border-b flex justify-between items-center ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+              <h2 className="text-xl font-bold">{editingId ? 'Edit Purchase Order' : 'Add Purchase Order'}</h2>
+              <button onClick={closeModal} className="text-gray-400 hover:text-red-500 transition-colors">
+                <i className="fa-solid fa-xmark text-xl"></i>
               </button>
             </div>
-
-            <div className={`flex-1 overflow-y-auto p-4 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100/60'}`}>
-              <div className={`border rounded-xl p-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                  {formFields.map((f) => (
-                    <div key={f.name} className={f.wide ? 'md:col-span-2' : ''}>
-                      <label className="block mb-1 font-semibold">{f.label}</label>
-                      {f.type === 'select' ? (
-                        <select
-                          value={formData[f.name] ?? ''}
-                          onChange={(e) => handleFormChange(f.name, e.target.value)}
-                          className={inputCls}
-                        >
-                          {Array.from(new Set([...f.options, formData[f.name]].filter(Boolean))).map((opt) => (
-                            <option key={opt} value={opt}>{opt}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type={f.type}
-                          step={f.type === 'number' ? 'any' : undefined}
-                          required={f.required}
-                          value={formData[f.name] ?? ''}
-                          onChange={(e) => handleFormChange(f.name, e.target.value)}
-                          className={inputCls}
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
+            
+            <div className="p-6 overflow-y-auto">
+              <form id="po-form" onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {formFields.map(f => (
+                  <div key={f.name} className={f.wide ? 'md:col-span-2' : ''}>
+                    <label className={`block text-sm font-semibold mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                      {f.label}
+                    </label>
+                    {f.type === 'select' ? (
+                      <select 
+                        required={f.required} 
+                        value={formData[f.name]} 
+                        onChange={e => handleFormChange(f.name, e.target.value)} 
+                        className={inputCls}
+                      >
+                        {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    ) : (
+                      <input 
+                        type={f.type} 
+                        required={f.required} 
+                        value={formData[f.name]} 
+                        onChange={e => handleFormChange(f.name, e.target.value)} 
+                        className={inputCls} 
+                      />
+                    )}
+                  </div>
+                ))}
+              </form>
             </div>
-
-            <div className={`px-4 py-3 border-t flex justify-end gap-2 ${isDarkMode ? 'border-slate-700 bg-[#1E293B]' : 'border-gray-200 bg-gray-50'}`}>
-              <button type="button" onClick={closeModal} className="px-4 py-2 text-xs font-semibold border rounded-lg">Cancel</button>
-              <button type="submit" className="px-4 py-2 text-xs font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700">Save PO</button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* PRINT VIEW DOCUMENT */}
-      {printOrder && (
-        <div id="printable-po-document" className="hidden bg-white text-black p-8 relative">
-          <div className="flex justify-between items-start mb-8 border-b-2 border-gray-800 pb-6">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-800">PURCHASE ORDER</h1>
-              <p className="text-gray-600 mt-2 font-semibold text-lg">PO Number: {printOrder.poNumber}</p>
-              <p className="text-gray-600">Date: {printOrder.receiptDate || '-'}</p>
-              <p className="text-gray-600">Supplier: {printOrder.supplier || '-'}</p>
-            </div>
-            <div className="text-right">
-              <h2 className="text-2xl font-bold text-red-600">Detmold Packaging</h2>
-              <p className="text-md font-medium text-gray-700">PT Detpak Indonesia</p>
+            
+            <div className={`px-6 py-4 border-t flex justify-end gap-3 ${isDarkMode ? 'border-slate-700' : 'border-gray-100 bg-gray-50'}`}>
+              <button onClick={closeModal} type="button" className={`px-4 py-2 rounded-lg font-medium transition-colors ${isDarkMode ? 'bg-slate-700 text-slate-200 hover:bg-slate-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}>
+                Cancel
+              </button>
+              <button type="submit" form="po-form" className="px-5 py-2 rounded-lg font-medium bg-[#004797] text-white hover:bg-blue-800 transition-colors">
+                <i className="fa-solid fa-save mr-2"></i> Save Document
+              </button>
             </div>
           </div>
-
-          <table className="w-full mb-8 border-collapse border border-gray-300">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="border border-gray-300 p-3 text-left w-12">No</th>
-                <th className="border border-gray-300 p-3 text-left">Part</th>
-                <th className="border border-gray-300 p-3 text-left">Description</th>
-                <th className="border border-gray-300 p-3 text-center w-20">Qty</th>
-                <th className="border border-gray-300 p-3 text-center w-20">UOM</th>
-                <th className="border border-gray-300 p-3 text-right w-32">Unit Price</th>
-                <th className="border border-gray-300 p-3 text-right w-32">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {printRows.map((r, idx) => (
-                <tr key={r.id ?? idx}>
-                  <td className="border border-gray-300 p-3 text-center">{r.poLine || idx + 1}</td>
-                  <td className="border border-gray-300 p-3">{r.part || '-'}</td>
-                  <td className="border border-gray-300 p-3">{r.description || '-'}</td>
-                  <td className="border border-gray-300 p-3 text-center">{qtyFormatter.format(r.qtyReceived)}</td>
-                  <td className="border border-gray-300 p-3 text-center">{r.uom || '-'}</td>
-                  <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(r.price)}</td>
-                  <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(r.amount)}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="bg-gray-100 font-bold">
-                <td className="border border-gray-300 p-3 text-right" colSpan="6">Total ({printOrder.currency || '-'})</td>
-                <td className="border border-gray-300 p-3 text-right">{moneyFormatter.format(printTotal)}</td>
-              </tr>
-            </tfoot>
-          </table>
         </div>
       )}
-    </div>
+    </AppLayout>
   );
 }
