@@ -27,6 +27,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [isLoading, setIsLoading] = useState(true);
   const [suppliersMap, setSuppliersMap] = useState({});
   const [supplierParetoTab, setSupplierParetoTab] = useState('top20');
+  const [supplierCategoryGroup, setSupplierCategoryGroup] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showPendingModal, setShowPendingModal] = useState(false);
   const [pendingModalReady, setPendingModalReady] = useState(false);
@@ -43,6 +44,21 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [drillLevel, setDrillLevel] = useState(0); 
   const [selectedGroup, setSelectedGroup] = useState(null); 
   const [selectedSubCategory, setSelectedSubCategory] = useState(null); 
+
+  // Dropdown filter Direct/Indirect yang dibuka dari box "Total Spending" (reuse drillLevel/selectedGroup
+  // yang sama dengan drill-down pie chart Category, supaya chart Category & Origin ikut kefilter bareng)
+  const [showSpendFilterMenu, setShowSpendFilterMenu] = useState(false);
+  const spendFilterRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutsideSpendFilter = (e) => {
+      if (spendFilterRef.current && !spendFilterRef.current.contains(e.target)) {
+        setShowSpendFilterMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutsideSpendFilter);
+    return () => document.removeEventListener('mousedown', handleClickOutsideSpendFilter);
+  }, []);
 
   // Bar Chart Drill-down State
   const [barChartGroup, setBarChartGroup] = useState(null); 
@@ -319,6 +335,19 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     return { categories, maxVal };
   }, [yearFilteredOrders, barChartGroup]);
+
+  // FILTER BOX KATEGORI (Product Group dinamis) untuk panel "Total Spend Direct & Indirect"
+  const categoryFilterList = useMemo(() => {
+    const map = {};
+    yearFilteredOrders.forEach((order) => {
+      const cat = getOrderCategory(order) || 'Other';
+      const cost = getOrderTotal(order);
+      map[cat] = (map[cat] || 0) + cost;
+    });
+    return Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, total]) => ({ name, total }));
+  }, [yearFilteredOrders]);
 
   // DATA PARETO CATEGORY
   const [categoryChartView, setCategoryChartView] = useState('bar');
@@ -721,7 +750,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     const supMap = {};
     let grandTotalSpend = 0;
 
-    yearFilteredOrders.forEach((order) => {
+    const baseOrders = supplierCategoryGroup
+      ? yearFilteredOrders.filter((order) => (getOrderCategory(order) || 'Other') === supplierCategoryGroup)
+      : yearFilteredOrders;
+
+    baseOrders.forEach((order) => {
       const sup = getOrderSupplier(order);
       const cost = getOrderTotal(order);
       if (sup && sup !== '-') {
@@ -755,7 +788,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     });
 
     return { items, grandTotalSpend };
-  }, [yearFilteredOrders, supplierParetoTab]);
+  }, [yearFilteredOrders, supplierParetoTab, supplierCategoryGroup]);
 
   const filteredOrders = useMemo(() => {
     if (selectedCategory === 'All') return yearFilteredOrders;
@@ -865,11 +898,16 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   }, [yearFilteredOrders, drillLevel, selectedGroup]);
 
   // === DATA UNTUK PIE CHART 2 (IMPORT VS LOCAL) ===
+  // Ikut kefilter Direct/Indirect yang sama dengan pie chart Category (dipilih lewat box "Total Spending")
   const originPieChartData = useMemo(() => {
     const originMap = { 'Local': 0, 'Import': 0 };
     let grandTotal = 0;
 
-    yearFilteredOrders.forEach((order) => {
+    const ordersForOrigin = (drillLevel === 1 && selectedGroup)
+      ? yearFilteredOrders.filter((order) => getParentCategory(normalizeCategory(getOrderCategory(order))) === selectedGroup)
+      : yearFilteredOrders;
+
+    ordersForOrigin.forEach((order) => {
       const cost = getOrderTotal(order);
       const origin = getOrderOrigin(order);
       if (origin.toLowerCase().includes('import') || origin.toLowerCase().includes('impor')) {
@@ -894,7 +932,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       });
 
     return { categories, grandTotal };
-  }, [yearFilteredOrders]);
+  }, [yearFilteredOrders, drillLevel, selectedGroup]);
 
 
   // === FUNGSI HELPER UNTUK MENGGAMBAR SVG PIE CHART ===
@@ -1072,6 +1110,31 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return renderGenericPieChart(categories, grandTotal, null, false);
   };
 
+  const renderCategoryFilterBox = () => {
+    if (categoryFilterList.length === 0) {
+      return <div className="h-32 flex items-center justify-center text-gray-400 text-sm">No category data available</div>;
+    }
+    return (
+      <div className="flex flex-wrap justify-center gap-4">
+        {categoryFilterList.map((cat) => (
+          <button
+            key={cat.name}
+            onClick={() => {
+              setBarChartGroup(cat.name);
+              setCategoryChartView('pareto');
+            }}
+            className={`flex flex-col items-center gap-2 px-7 py-6 min-w-[180px] rounded-2xl border text-center transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${isDarkMode ? 'bg-[#0F172A] border-slate-700 hover:border-red-500' : 'bg-gray-50 border-gray-200 hover:border-red-400'}`}
+          >
+            <span className={`text-sm font-bold uppercase tracking-wide ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>
+              {cat.name === 'Other' ? 'Lainnya' : cat.name}
+            </span>
+            <span className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   const renderCategoryBarChart = () => {
     const { categories: top10Categories, maxVal } = barChartData; 
     const barColors = ['#DC2626', '#EF4444', '#F87171', '#FCA5A5', '#FECACA', '#FCA5A5', '#F87171', '#EF4444', '#DC2626', '#B91C1C'];
@@ -1125,6 +1188,28 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             <span key={i} className="-translate-x-1/2">{t === 0 ? '$0' : formatShortUSD(t)}</span>
           ))}
         </div>
+      </div>
+    );
+  };
+
+  const renderSupplierCategoryFilterBox = () => {
+    if (categoryFilterList.length === 0) {
+      return <div className="h-32 flex items-center justify-center text-gray-400 text-sm">No category data available</div>;
+    }
+    return (
+      <div className={`flex flex-wrap gap-4 pb-5 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+        {categoryFilterList.map((cat) => (
+          <button
+            key={cat.name}
+            onClick={() => setSupplierCategoryGroup(cat.name)}
+            className={`flex-1 min-w-[190px] flex flex-col items-start gap-2 px-5 py-5 rounded-xl border text-left transition-colors cursor-pointer ${isDarkMode ? 'bg-slate-900/40 border-slate-800 hover:bg-slate-800/60' : 'bg-gray-50/60 border-gray-100 hover:bg-gray-100/70'}`}
+          >
+            <span className={`text-xs font-bold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+              {cat.name === 'Other' ? 'Lainnya' : cat.name}
+            </span>
+            <span className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
+          </button>
+        ))}
       </div>
     );
   };
@@ -1532,8 +1617,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const dashboardTabs = [
     { id: 'overview', label: 'Overview', icon: 'fa-gauge-high' },
-    { id: 'category', label: 'Category', icon: 'fa-chart-pie' },
-    { id: 'supplier', label: 'Supplier', icon: 'fa-users' },
+    { id: 'category', label: 'Spend by Category', icon: 'fa-chart-pie' },
+    { id: 'supplier', label: 'Spend by Supplier', icon: 'fa-users' },
   ];
 
   return (
@@ -1620,13 +1705,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           {activeTab === 'overview' && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div ref={spendFilterRef} className={`relative p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-12 h-12 rounded-xl bg-red-600 text-white flex items-center justify-center text-xl shrink-0 font-bold">
                     $
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 mb-0.5">
-                      <p className={`text-xs font-semibold uppercase tracking-wider shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Cost</p>
+                      <p className={`text-xs font-semibold uppercase tracking-wider shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spending</p>
                       <select 
                         value={selectedYear}
                         onChange={(e) => setSelectedYear(e.target.value)}
@@ -1643,8 +1728,56 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                         ))}
                       </select>
                     </div>
-                    <p title={formatUSD(filteredTotalCost)} className={`text-xl sm:text-2xl font-black truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p title={formatUSD(filteredTotalCost)} className={`text-xl sm:text-2xl font-black truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(filteredTotalCost)}</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowSpendFilterMenu((v) => !v)}
+                        title="Filter chart Category & Origin berdasarkan Direct/Indirect"
+                        className={`shrink-0 flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border transition-colors cursor-pointer ${
+                          drillLevel === 1 && selectedGroup
+                            ? (selectedGroup === 'Direct' ? 'bg-red-600 text-white border-red-600' : 'bg-blue-600 text-white border-blue-600')
+                            : isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600 hover:border-slate-400' : 'bg-gray-100 text-gray-600 border-gray-300 hover:border-gray-400'
+                        }`}
+                      >
+                        {drillLevel === 1 && selectedGroup ? selectedGroup : 'All'}
+                        <i className={`fa-solid fa-caret-down transition-transform ${showSpendFilterMenu ? 'rotate-180' : ''}`}></i>
+                      </button>
+                    </div>
                   </div>
+
+                  {showSpendFilterMenu && (
+                    <div className={`absolute left-5 top-full mt-1.5 z-20 w-40 rounded-lg border shadow-lg overflow-hidden ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
+                      <p className={`px-3 pt-2 pb-1 text-[10px] font-bold uppercase tracking-wide ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Filter Category & Origin</p>
+                      {['All', 'Direct', 'Indirect'].map((opt) => {
+                        const isSelected = opt === 'All' ? drillLevel === 0 : (drillLevel === 1 && selectedGroup === opt);
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            onClick={() => {
+                              if (opt === 'All') {
+                                setDrillLevel(0);
+                                setSelectedGroup(null);
+                              } else {
+                                setDrillLevel(1);
+                                setSelectedGroup(opt);
+                              }
+                              setShowSpendFilterMenu(false);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-xs font-semibold transition-colors flex items-center justify-between ${
+                              isSelected
+                                ? (isDarkMode ? 'bg-slate-800 text-white' : 'bg-gray-100 text-gray-900')
+                                : (isDarkMode ? 'text-slate-300 hover:bg-slate-800/60' : 'text-gray-600 hover:bg-gray-50')
+                            }`}
+                          >
+                            {opt === 'All' ? 'All Spend' : opt}
+                            {isSelected && <i className="fa-solid fa-check text-[10px]"></i>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className={`p-5 rounded-2xl border shadow-xs flex items-center gap-4 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
@@ -1652,7 +1785,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     <i className="fa-solid fa-box-archive"></i>
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Orders</p>
+                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total PO</p>
                     <div className="flex items-center flex-wrap gap-x-2 gap-y-1">
                       <p className={`text-xl sm:text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
                       {kpiStats.importCount > 0 && (
@@ -1687,7 +1820,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               </div>
 
               <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <h3 className={`font-bold text-center text-sm mb-6 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Cost by Month Name (USD)</h3>
+                <h3 className={`font-bold text-center text-sm mb-6 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Spend by Month (USD)</h3>
                 <div className="w-full h-64 relative">
                   <svg viewBox="0 0 1000 240" className="w-full h-full overflow-visible">
                     {[monthlyStats.maxVal, monthlyStats.maxVal * 0.75, monthlyStats.maxVal * 0.5, monthlyStats.maxVal * 0.25, 0].map((labelVal, i) => {
@@ -1746,7 +1879,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                       </span>
                     </div>
                     <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                      Comparison between Import and Local spend.
+                      {drillLevel === 1 && selectedGroup
+                        ? `Comparison between Import and Local spend for ${selectedGroup}.`
+                        : 'Comparison between Import and Local spend.'}
                     </p>
                   </div>
                   {renderOriginPieChart()}
@@ -1757,7 +1892,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div>
                     <div className="flex items-center gap-3 flex-wrap">
                       <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {barChartGroup ? `Top 20 Items in ${barChartGroup}` : 'Total Spend by Direct & Indirect Category'}
+                        {barChartGroup ? `Top 20 Items in ${barChartGroup}` : 'Total Spend Direct & Indirect'}
                       </h3>
                       <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-gray-100 text-gray-600 border-gray-300'}`}>
                         {selectedYear === 'All' ? 'All Time' : selectedYear}
@@ -1775,11 +1910,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                       )}
                     </div>
                     {!barChartGroup && (
-                      <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Click on any bar to view its Pareto analysis.</p>
+                      <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Pilih kategori untuk melihat Top 20 Pareto spend item pada kategori tersebut.</p>
                     )}
                   </div>
                 </div>
-                {barChartGroup && categoryChartView === 'pareto' ? renderCategoryParetoChart() : renderCategoryBarChart()}
+                {barChartGroup && categoryChartView === 'pareto' ? renderCategoryParetoChart() : renderCategoryFilterBox()}
               </div>
             </div>
           )}
@@ -1787,42 +1922,55 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           {activeTab === 'supplier' && (
             <div className="flex flex-col gap-6">
               <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-6 border-b pb-4 border-slate-700/50">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                   <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className={`font-bold text-lg uppercase tracking-wide ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {supplierParetoTab === 'lowest20' ? 'LOWEST 20 SPEND BY SUPPLIER' : 'TOP 20 SPEND BY SUPPLIER'}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {supplierCategoryGroup
+                          ? `${supplierParetoTab === 'lowest20' ? 'Lowest' : 'Top'} 20 Supplier - ${supplierCategoryGroup}`
+                          : 'Total Spend Direct & Indirect'}
                       </h3>
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-gray-100 text-gray-700'}`}>
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${isDarkMode ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-gray-100 text-gray-600 border-gray-300'}`}>
                         {selectedYear === 'All' ? 'All Time' : `Year ${selectedYear}`}
                       </span>
+                      {supplierCategoryGroup && (
+                        <button
+                          onClick={() => setSupplierCategoryGroup(null)}
+                          className="text-xs bg-red-100 text-red-600 px-2 py-1 rounded-md hover:bg-red-200 transition-colors cursor-pointer font-semibold flex items-center"
+                        >
+                          <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                        </button>
+                      )}
                     </div>
-                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                      {supplierParetoTab === 'lowest20'
-                        ? '20 suppliers with the lowest spend along with their cumulative percentages.'
-                        : 'Supplier spend distribution analysis with cumulative percentage curve (80/20 Pareto Principle).'}
-                    </p>
-                    <p className={`text-[10px] mt-1 italic ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                      Generated on {new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </p>
+                    {supplierCategoryGroup ? (
+                      <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                        {supplierParetoTab === 'lowest20'
+                          ? '20 suppliers with the lowest spend along with their cumulative percentages.'
+                          : 'Supplier spend distribution analysis with cumulative percentage curve (80/20 Pareto Principle).'}
+                      </p>
+                    ) : (
+                      <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Pilih kategori untuk melihat Top 20 Supplier pada kategori tersebut.</p>
+                    )}
                   </div>
-                  <div className={`flex p-1 rounded-xl shrink-0 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>
-                    <button 
-                      onClick={() => setSupplierParetoTab('top20')} 
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'top20' ? 'bg-red-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
-                    >
-                      Top 20
-                    </button>
-                    <button 
-                      onClick={() => setSupplierParetoTab('lowest20')} 
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'lowest20' ? 'bg-orange-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
-                    >
-                      Lowest 20
-                    </button>
-                  </div>
+                  {supplierCategoryGroup && (
+                    <div className={`flex p-1 rounded-xl shrink-0 ${isDarkMode ? 'bg-[#0F172A]' : 'bg-gray-100'}`}>
+                      <button
+                        onClick={() => setSupplierParetoTab('top20')}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'top20' ? 'bg-red-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        Top 20
+                      </button>
+                      <button
+                        onClick={() => setSupplierParetoTab('lowest20')}
+                        className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${supplierParetoTab === 'lowest20' ? 'bg-orange-600 text-white shadow-xs' : isDarkMode ? 'text-slate-400 hover:text-white' : 'text-gray-600 hover:text-gray-900'}`}
+                      >
+                        Lowest 20
+                      </button>
+                    </div>
+                  )}
                 </div>
-                
-                {renderSupplierParetoChart()}
+
+                {supplierCategoryGroup ? renderSupplierParetoChart() : renderSupplierCategoryFilterBox()}
               </div>
             </div>
           )}

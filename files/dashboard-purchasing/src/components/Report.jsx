@@ -179,6 +179,75 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   const getPoNumber = (order) => order.po_number || order.po_no || order.poNumber || order.noPO || order.nomorPO || '-';
 
+  // === Kolom khusus untuk tabel "Purchase Spending (Import)" ===
+  // (mengikuti struktur tabel purchase_orders: Product Group, Qty Received, UOM, Spending USD, Year, Local/Import)
+  const getProductGroup = (order) =>
+    order.product_group || order.productGroup || order.ProductGroup || 'Other';
+
+  const getQtyReceived = (order) => {
+    const raw = order.qty_received ?? order.qtyReceived ?? order.QtyReceived ?? order.quantity ?? order.qty ?? 0;
+    if (typeof raw === 'string') return parseFloat(raw.replace(/[^0-9.-]/g, '')) || 0;
+    return parseFloat(raw) || 0;
+  };
+
+  const getUOM = (order) => order.uom || order.UOM || order.satuan || '-';
+
+  const getSpendingUSD = (order) => {
+    const raw = order.spending_usd ?? order.spendingUSD ?? order.spending_USD ?? order.SpendingUSD;
+    if (raw !== undefined && raw !== null && raw !== '') {
+      if (typeof raw === 'string') return parseFloat(raw.replace(/[^0-9.-]/g, '')) || 0;
+      return parseFloat(raw) || 0;
+    }
+    // fallback: hitung dari total nilai IDR kalau kolom Spending USD tidak ada
+    return getOrderTotalIDR(order) / EXCHANGE_RATE;
+  };
+
+  const getLocalImport = (order) =>
+    order.local_import || order.localImport || order['Local/Import'] || order.localOrImport || '-';
+
+  const getOrderYear = (order) => {
+    const raw = order.year || order.Year;
+    if (raw) return String(raw);
+    const d = getOrderDate(order);
+    if (d && d !== '-') {
+      const parsed = new Date(d);
+      if (!isNaN(parsed.getTime())) return String(parsed.getFullYear());
+    }
+    return null;
+  };
+
+  // Rekap "Purchase Spending (Imperial)": baris per Product Group (nama sama seperti di halaman Purchase Orders),
+  // kolom per tahun yang muncul di data (Quantity, Spending (USD), Price/UOM) — dinamis mengikuti data.
+  // Semua data dipakai (tidak difilter Local/Import).
+  const purchaseSpendingReport = useMemo(() => {
+    const years = [...new Set(orders.map(getOrderYear).filter(Boolean))].sort();
+
+    const byClass = {};
+    orders.forEach((o) => {
+      const cls = getProductGroup(o);
+      const yr = getOrderYear(o);
+      if (!yr) return;
+      if (!byClass[cls]) byClass[cls] = { uomCounts: {}, years: {} };
+
+      const uom = getUOM(o);
+      byClass[cls].uomCounts[uom] = (byClass[cls].uomCounts[uom] || 0) + 1;
+
+      if (!byClass[cls].years[yr]) byClass[cls].years[yr] = { qty: 0, spendUSD: 0 };
+      byClass[cls].years[yr].qty += getQtyReceived(o);
+      byClass[cls].years[yr].spendUSD += getSpendingUSD(o);
+    });
+
+    const rows = Object.entries(byClass).map(([className, data]) => {
+      // UOM yang ditampilkan = UOM paling sering muncul untuk Product Group ini
+      const uom = Object.entries(data.uomCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
+      return { className, uom, years: data.years };
+    });
+
+    return { years, rows };
+  }, [orders]);
+
+  const formatQty = (number) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(number || 0);
+
   const filteredOrders = useMemo(() => {
     return orders.filter((order) => {
       if (filterStatus !== 'All Statuses') {
@@ -396,176 +465,73 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
               </div>
             </div>
           ) : (
-            /* GENERATE REPORT */
+            /* GENERATE REPORT: Purchase Spending (Import) — rekap per Main Class x Tahun */
             <div className="space-y-6">
               <div className="flex justify-between items-start">
                 <div>
-                  <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Report & Export</h1>
-                  <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Pull Purchase Order reports based on specific criteria.</p>
+                  <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Purchase Spending (Imperial)</h1>
+                  <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Rekap quantity, spending, dan price/UOM untuk seluruh pembelian, per kategori dan per tahun.</p>
                 </div>
               </div>
 
-              {/* FILTER PANEL */}
-              <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <h2 className={`text-xs font-semibold uppercase tracking-wider mb-4 flex items-center gap-2 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                  <i className="fa-solid fa-filter text-red-500"></i> Report Filter
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>From Date</label>
-                    <input
-                      type="date"
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white focus:border-red-500' : 'bg-white border-gray-300 text-gray-800 focus:border-red-500'}`}
-                    />
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>To Date</label>
-                    <input
-                      type="date"
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white focus:border-red-500' : 'bg-white border-gray-300 text-gray-800 focus:border-red-500'}`}
-                    />
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>PO Status</label>
-                    <select
-                      value={filterStatus}
-                      onChange={(e) => setFilterStatus(e.target.value)}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white focus:border-red-500' : 'bg-white border-gray-300 text-gray-800 focus:border-red-500'}`}
-                    >
-                      {statusOptions.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium mb-1 ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>Supplier</label>
-                    <select
-                      value={filterSupplier}
-                      onChange={(e) => setFilterSupplier(e.target.value)}
-                      className={`w-full border rounded-lg px-3 py-2 text-sm outline-none ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white focus:border-red-500' : 'bg-white border-gray-300 text-gray-800 focus:border-red-500'}`}
-                    >
-                      {uniqueSuppliers.map((sup) => (
-                        <option key={sup} value={sup}>
-                          {sup}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* DATA SUMMARY CARDS */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <div className={`p-5 rounded-2xl border shadow-xs flex justify-between items-center ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div>
-                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total POs Found</div>
-                    <div className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {filteredOrders.length} <span className={`text-sm font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Transactions</span>
-                    </div>
-                  </div>
-                  <div className="w-12 h-12 bg-red-600 text-white rounded-xl flex items-center justify-center text-xl shrink-0 font-bold">
-                    <i className="fa-solid fa-receipt"></i>
-                  </div>
-                </div>
-
-                <div className={`p-5 rounded-2xl border shadow-xs flex justify-between items-center ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div>
-                    <div className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total Report Value</div>
-                    <div className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(totalReportValueIDR / EXCHANGE_RATE)}</div>
-                  </div>
-                  <div className="w-12 h-12 bg-[#2563EB] text-white rounded-xl flex items-center justify-center text-xl shrink-0 font-bold">
-                    $
-                  </div>
-                </div>
-              </div>
-
-              {/* TABLE */}
+              {/* TABLE: PURCHASE SPENDING */}
               <div className={`rounded-2xl border shadow-xs overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm whitespace-nowrap">
                     <thead>
                       <tr className={`border-b font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
-                        <th className="py-4 px-6">PO Number</th>
-                        <th className="py-4 px-6">Date</th>
-                        <th className="py-4 px-6">Supplier</th>
-                        <th className="py-4 px-6">Category</th>
-                        <th className="py-4 px-6">Status</th>
-                        <th className="py-4 px-6 text-right">Total (USD)</th>
+                        <th rowSpan={2} className="py-4 px-6 align-bottom">Category</th>
+                        <th rowSpan={2} className="py-4 px-6 align-bottom">UOM</th>
+                        {purchaseSpendingReport.years.map((yr, idx) => (
+                          <th
+                            key={yr}
+                            colSpan={3}
+                            className={`py-3 px-6 text-center ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}
+                          >
+                            {yr}
+                          </th>
+                        ))}
+                      </tr>
+                      <tr className={`border-b font-semibold text-[11px] uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-500' : 'bg-gray-50 border-gray-200 text-gray-400'}`}>
+                        {purchaseSpendingReport.years.map((yr, idx) => (
+                          <React.Fragment key={yr}>
+                            <th className={`py-2 px-4 text-right ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}>Quantity</th>
+                            <th className="py-2 px-4 text-right">Spending (USD)</th>
+                            <th className="py-2 px-4 text-right">Price/UOM</th>
+                          </React.Fragment>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
-                      {filteredOrders.length === 0 ? (
+                      {purchaseSpendingReport.rows.length === 0 ? (
                         <tr>
-                          <td colSpan="6" className="py-10 text-center text-gray-400">
-                            No transaction data found.
+                          <td colSpan={2 + purchaseSpendingReport.years.length * 3} className="py-10 text-center text-gray-400">
+                            No purchase data found.
                           </td>
                         </tr>
                       ) : (
-                        paginatedOrders.map((order, idx) => (
-                          <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                            <td className="py-4 px-6 font-bold text-red-500">{getPoNumber(order)}</td>
-                            <td className={`py-4 px-6 text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{getOrderDate(order)}</td>
-                            <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{getOrderSupplier(order)}</td>
-                            <td className="py-4 px-6">
-                              <span className={`px-3 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'}`}>
-                                {getOrderCategory(order)}
-                              </span>
-                            </td>
-                            <td className="py-4 px-6">
-                              <span className={`px-3 py-1 rounded-full text-xs ${getStatusColor(getOrderStatus(order))}`}>
-                                {getOrderStatus(order)}
-                              </span>
-                            </td>
-                            <td className={`py-4 px-6 text-right font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                              {formatUSD(getOrderTotalIDR(order) / EXCHANGE_RATE)}
-                            </td>
+                        purchaseSpendingReport.rows.map((row) => (
+                          <tr key={row.className} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
+                            <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{row.className}</td>
+                            <td className={`py-4 px-6 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{row.uom}</td>
+                            {purchaseSpendingReport.years.map((yr, idx) => {
+                              const cell = row.years[yr];
+                              const qty = cell?.qty || 0;
+                              const spendUSD = cell?.spendUSD || 0;
+                              const priceUOM = qty > 0 ? spendUSD / qty : 0;
+                              return (
+                                <React.Fragment key={yr}>
+                                  <td className={`py-4 px-4 text-right ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}>{formatQty(qty)}</td>
+                                  <td className="py-4 px-4 text-right">{formatUSD(spendUSD)}</td>
+                                  <td className={`py-4 px-4 text-right font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(priceUOM)}</td>
+                                </React.Fragment>
+                              );
+                            })}
                           </tr>
                         ))
                       )}
                     </tbody>
                   </table>
-                </div>
-
-                {/* PAGINATION CONTROLS */}
-                <div className={`flex items-center justify-between px-6 py-4 border-t ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
-                  <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                    Showing <span className="font-bold text-[#004797]">{filteredOrders.length > 0 ? (currentPage - 1) * itemsPerPage + 1 : 0}</span> - <span className="font-bold text-[#004797]">{Math.min(currentPage * itemsPerPage, filteredOrders.length)}</span> of total <span className="font-bold">{filteredOrders.length}</span> rows
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                      disabled={currentPage === 1}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        currentPage === 1
-                          ? 'opacity-40 cursor-not-allowed'
-                          : 'cursor-pointer'
-                      } ${isDarkMode ? 'bg-slate-800 text-slate-200 hover:bg-slate-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                    >
-                      Prev
-                    </button>
-                    <span className={`text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
-                      Page {currentPage} of {totalPages}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                      disabled={currentPage === totalPages || totalPages === 0}
-                      className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                        currentPage === totalPages || totalPages === 0
-                          ? 'opacity-40 cursor-not-allowed'
-                          : 'cursor-pointer'
-                      } ${isDarkMode ? 'bg-slate-800 text-slate-200 hover:bg-slate-700' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
-                    >
-                      Next
-                    </button>
-                  </div>
                 </div>
               </div>
             </div>

@@ -273,7 +273,24 @@ export default function PurchaseOrders({
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
-  const [isPoMenuExpanded, setIsPoMenuExpanded] = useState(true);
+  // Status buka/tutup submenu "PO Transaction List / Excel Upload" disimpan di localStorage
+  // supaya tidak reset ke default tiap kali pindah halaman lalu balik lagi ke Purchase Order.
+  const PO_MENU_STORAGE_KEY = 'poMenuExpanded_v1';
+  const [isPoMenuExpanded, setIsPoMenuExpanded] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(PO_MENU_STORAGE_KEY);
+      return raw !== null ? JSON.parse(raw) : true;
+    } catch (e) {
+      return true;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PO_MENU_STORAGE_KEY, JSON.stringify(isPoMenuExpanded));
+    } catch (e) {
+      /* abaikan kalau storage tidak tersedia */
+    }
+  }, [isPoMenuExpanded]);
   const [showUploadView, setShowUploadView] = useState(false);
 
   const supplierDropdownRef = useRef(null);

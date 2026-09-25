@@ -3,6 +3,22 @@ import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
 import AppLayout from './AppLayout'; // Sesuaikan path import jika berbeda
 
+// Format tanggal untuk ditampilkan: menerima "DD/MM/YYYY", ISO datetime ("...T17:00:00.000Z"),
+// atau format lain, lalu dikembalikan dalam bentuk singkat "28 Jun 25" supaya tidak
+// bertindihan di axis chart maupun kepanjangan di tabel.
+const formatDisplayDate = (dateInput) => {
+  if (!dateInput) return '-';
+  let d;
+  if (typeof dateInput === 'string' && /^\d{2}\/\d{2}\/\d{4}$/.test(dateInput)) {
+    const [day, month, year] = dateInput.split('/');
+    d = new Date(`${year}-${month}-${day}`);
+  } else {
+    d = new Date(dateInput);
+  }
+  if (isNaN(d.getTime())) return String(dateInput);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+};
+
 // === KOMPONEN GRAFIK TREN HARGA (SVG Dynamic Chart) ===
 function CommodityChart({ history, isDarkMode, unit }) {
   const chartData = history ? [...history].reverse() : [];
@@ -26,8 +42,8 @@ function CommodityChart({ history, isDarkMode, unit }) {
   const yMax = maxPrice + padding;
 
   const width = 800;
-  const height = 280; 
-  const margin = { top: 40, right: 30, bottom: 40, left: 60 };
+  const height = 320;
+  const margin = { top: 40, right: 30, bottom: 70, left: 60 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
 
@@ -57,9 +73,16 @@ function CommodityChart({ history, isDarkMode, unit }) {
   }
 
   const isDense = points.length > 30;
-  const circleRadius = isDense ? 2 : 5; 
-  
-  const xLabelInterval = Math.ceil(points.length / 6);
+  const circleRadius = isDense ? 2 : 5;
+
+  // Ambil label tanggal secara merata by index (bukan modulo) supaya tidak bertindihan,
+  // lalu ditampilkan miring supaya tetap muat walau jaraknya rapat.
+  const maxLabels = Math.min(points.length, isDense ? 8 : 6);
+  const labelIndexSet = new Set();
+  for (let i = 0; i < maxLabels; i++) {
+    const idx = Math.round((i / (maxLabels - 1 || 1)) * (points.length - 1));
+    labelIndexSet.add(idx);
+  }
 
   return (
     <div className="w-full flex flex-col">
@@ -100,18 +123,20 @@ function CommodityChart({ history, isDarkMode, unit }) {
           })}
 
           {points.map((p, i) => {
-            if (i !== 0 && i !== points.length - 1 && i % xLabelInterval !== 0) return null;
+            if (!labelIndexSet.has(i)) return null;
+            const labelY = margin.top + chartHeight + 22;
             return (
-              <text 
-                key={`x-${i}`} 
-                x={p.x} 
-                y={height - 10} 
-                textAnchor="middle" 
-                fontSize="11" 
+              <text
+                key={`x-${i}`}
+                x={p.x}
+                y={labelY}
+                textAnchor="end"
+                fontSize="10"
                 fontWeight="500"
                 fill={isDarkMode ? '#94A3B8' : '#64748B'}
+                transform={`rotate(-35, ${p.x}, ${labelY})`}
               >
-                {p.date}
+                {formatDisplayDate(p.date)}
               </text>
             );
           })}
@@ -621,7 +646,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
                 ) : (
                   filteredHistory.map((row, idx) => (
                     <tr key={idx} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                      <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{row.date}</td>
+                      <td className={`px-6 py-3.5 font-medium ${isDarkMode ? 'text-slate-300' : 'text-gray-900'}`}>{formatDisplayDate(row.date)}</td>
                       <td className={`px-6 py-3.5 font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>{row.price}</td>
                       <td className={`px-6 py-3.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-600'}`}>{row.open}</td>
                       <td className="px-6 py-3.5 text-emerald-500 font-medium">{row.high}</td>

@@ -180,14 +180,31 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
   const bannerTileW = bannerBox.width / bannerTiles;
 
   // === ITEM SIDEBAR & BAR MENU ATAS (sama seperti Dashboard) ===
+  // "Master Data" menggabungkan Suppliers + Purchase Orders jadi satu grup yang bisa dibuka/tutup di sidebar.
+  // Halaman (activePage) di App.jsx TIDAK berubah: klik child tetap changePage('suppliers') / changePage('purchaseOrders').
   const sidebarItems = [
     { key: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
-    { key: 'suppliers', label: 'Suppliers', icon: 'fa-users' },
-    { key: 'purchaseOrders', label: 'Purchase Orders', icon: 'fa-cart-shopping' },
+    {
+      key: 'masterData',
+      label: 'Master Data',
+      icon: 'fa-database',
+      children: [
+        { key: 'suppliers', label: 'Supplier', icon: 'fa-users' },
+        { key: 'purchaseOrders', label: 'Purchase Order', icon: 'fa-cart-shopping' },
+      ],
+    },
     { key: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
     { key: 'report', label: 'Report', icon: 'fa-file-lines' },
     { key: 'settings', label: 'Settings', icon: 'fa-gear' },
   ];
+
+  // Status buka/tutup grup sidebar yang punya children (mis. "Master Data").
+  // Kalau user belum pernah klik toggle-nya, grup otomatis terbuka saat salah satu child-nya sedang aktif.
+  const [openSidebarGroups, setOpenSidebarGroups] = useState({});
+  const isGroupOpen = (item) =>
+    openSidebarGroups[item.key] !== undefined
+      ? openSidebarGroups[item.key]
+      : !!item.children?.some((c) => c.key === activePage);
   const topItems = [
     { key: 'dashboard', label: 'Dashboard', icon: 'fa-solid fa-house' },
     { key: 'marketPrice', label: 'Market Price', icon: 'fa-solid fa-chart-line' },
@@ -335,6 +352,73 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
         }`}>
           <nav className="flex flex-col gap-2 px-4">
             {sidebarItems.map((item) => {
+              // Grup statis dengan children (mis. "Master Data" -> Supplier / Purchase Order)
+              if (item.children) {
+                const isParentActive = item.children.some((c) => c.key === activePage);
+                const open = isGroupOpen(item);
+                return (
+                  <div key={item.key}>
+                    <button
+                      onClick={() => setOpenSidebarGroups((prev) => ({ ...prev, [item.key]: !open }))}
+                      className={`${sideBtnClass(isParentActive)} justify-between font-bold`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <i className={`fa-solid ${item.icon} w-5 text-lg`}></i> {item.label}
+                      </div>
+                      <i className={`fa-solid fa-chevron-${open ? 'down' : 'right'} text-xs transition-transform`}></i>
+                    </button>
+
+                    {open && (
+                      <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-[#B4CFEA]'}`}>
+                        {item.children.map((child) => {
+                          // Child bisa punya submenu sendiri dari halaman aktif (mis. Purchase Order -> List / Excel Upload)
+                          const isChildActive = activePage === child.key;
+                          const hasChildSub = !!submenu && submenu.page === child.key;
+                          return (
+                            <div key={child.key}>
+                              <button
+                                onClick={() => {
+                                  if (hasChildSub && isChildActive) submenu.onToggle?.();
+                                  else changePage && changePage(child.key);
+                                }}
+                                className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
+                                  isChildActive
+                                    ? isDarkMode ? 'text-slate-200 bg-slate-800/50 font-semibold' : 'text-gray-800 bg-white/70 font-semibold'
+                                    : isDarkMode ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-800 hover:bg-white/70'
+                                }`}
+                              >
+                                <span className="flex items-center gap-2">
+                                  <i className={`fa-solid ${child.icon} w-4 text-center`}></i> {child.label}
+                                </span>
+                                {hasChildSub && <i className={`fa-solid fa-chevron-${submenu.open ? 'down' : 'right'} text-[10px] transition-transform`}></i>}
+                              </button>
+
+                              {hasChildSub && isChildActive && submenu.open && (
+                                <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-[#B4CFEA]'}`}>
+                                  {submenu.items.map((sub) => (
+                                    <button
+                                      key={sub.id}
+                                      onClick={() => submenu.onSelect?.(sub.id)}
+                                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg transition-colors text-left cursor-pointer ${
+                                        submenu.activeId === sub.id
+                                          ? isDarkMode ? 'text-slate-200 bg-slate-800/50' : 'text-gray-800 bg-white/70'
+                                          : isDarkMode ? 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50' : 'text-gray-500 hover:text-gray-700 hover:bg-white/70'
+                                      }`}
+                                    >
+                                      <i className={`fa-solid ${sub.icon} w-4 text-center`}></i> {sub.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
               const isActive = activePage === item.key;
               const hasSub = !!submenu && submenu.page === item.key;
               return (

@@ -4,6 +4,41 @@ import { useTheme } from '../hooks/useTheme';
 import AppLayout from './AppLayout'; // header + sidebar + bar menu atas (sama seperti Dashboard)
 import { API_ENDPOINTS } from '../utils/api.config';
 
+// === PENYIMPANAN PILIHAN USER (bertahan saat pindah halaman/tab, sampai user menghapus atau menggantinya) ===
+const ANALYTICS_STORAGE_PREFIX = 'analytics_state_';
+
+// Seperti useState, tapi nilainya disimpan di localStorage. Ganti ke window.sessionStorage jika ingin reset saat browser ditutup.
+const usePersistentState = (key, initialValue) => {
+  const storageKey = ANALYTICS_STORAGE_PREFIX + key;
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      return raw !== null ? JSON.parse(raw) : initialValue;
+    } catch (e) {
+      return initialValue;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(value));
+    } catch (e) {
+      /* storage penuh/dinonaktifkan: abaikan, state tetap jalan di memori */
+    }
+  }, [storageKey, value]);
+  return [value, setValue];
+};
+
+const clearAnalyticsStorage = () => {
+  try {
+    Object.keys(window.localStorage)
+      .filter((k) => k.startsWith(ANALYTICS_STORAGE_PREFIX))
+      .forEach((k) => window.localStorage.removeItem(k));
+  } catch (e) { /* abaikan */ }
+};
+
+// Cache data PO di memori: saat kembali ke halaman Analytics, grafik langsung tampil (data disegarkan diam-diam di belakang)
+let ordersCache = null;
+
 // === KURS & HELPER UTILITY (KONVERSI & FORMATTING) ===
 const KURS_PER_TAHUN = {
   2023: 15331,
@@ -34,6 +69,7 @@ const toOrder = (po, suppliersMap = {}) => {
     totalUsd: usd === undefined || usd === null ? null : Number(usd),
     status: po.status || po.order_status || 'Pending',
     category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Others',
+    subcategory: [po.subcategory, po.sub_category, po.subCategory].find((v) => v && String(v) !== '0') || null,
     notes: po.description || po.notes || '',
     items: po.items || []
   };
@@ -53,6 +89,15 @@ const formatShortNumber = (val) => {
   if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(1).replace('.0', '')}M`;
   if (val >= 1_000) return `$${(val / 1_000).toFixed(0)}K`;
   return `$${val ? val.toFixed(0) : '0'}`;
+};
+
+// Format angka untuk label di atas titik grafik (lebih presisi dari formatShortNumber)
+const formatChartLabel = (val) => {
+  if (val === null || val === undefined) return '';
+  if (val >= 1_000_000_000) return `$${(val / 1_000_000_000).toFixed(2).replace(/\.?0+$/, '')}B`;
+  if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(2).replace(/\.?0+$/, '')}M`;
+  if (val >= 1_000) return `$${(val / 1_000).toFixed(1).replace('.0', '')}K`;
+  return `$${val.toFixed(0)}`;
 };
 
 const getOrderTotal = (order) => {
@@ -98,6 +143,18 @@ const getOrderTotal = (order) => {
 
 const getOrderDate = (order) => order.order_date || order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '';
 const getOrderCategory = (order) => order.category || order.kategori || order.categoryName || 'Others';
+
+const getOrderSubcategory = (order) => order.subcategory || order.sub_category || order.subCategory || 'General';
+
+// Format tanggal 'YYYY-MM-DD' (atau ISO) menjadi 'DD-MM-YYYY' untuk tampilan tabel
+const formatDateID = (dateStr) => {
+  if (!dateStr || dateStr === '-') return '-';
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+};
 const getOrderStatus = (order) => order.order_status || order.status || order.statusPesanan || order.orderStatus || '';
 const getOrderSupplier = (order) => order.supplier_name || order.supplier || order.namaSupplier || order.vendor || order.nama_supplier || 'Unknown Supplier';
 
@@ -183,6 +240,46 @@ const generateSmoothSvgPath = (points) => {
   }, '');
 };
 
+// Kurva mulus (monotone cubic) melewati semua titik tanpa overshoot melewati nilai min/max data.
+// Titik null = data belum ada -> kurva putus dan mulai segmen baru.
+const generateMonotoneSvgPath = (pts) => {
+  const segments = [];
+  let cur = [];
+  pts.forEach((pt) => {
+    if (pt) cur.push(pt);
+    else if (cur.length) { segments.push(cur); cur = []; }
+  });
+  if (cur.length) segments.push(cur);
+
+  return segments.map((seg) => {
+    const n = seg.length;
+    if (n === 1) return `M${seg[0].x} ${seg[0].y}`;
+    if (n === 2) return `M${seg[0].x} ${seg[0].y} L${seg[1].x} ${seg[1].y}`;
+
+    const dx = [], m = [];
+    for (let i = 0; i < n - 1; i++) {
+      dx[i] = seg[i + 1].x - seg[i].x;
+      m[i] = (seg[i + 1].y - seg[i].y) / dx[i];
+    }
+    const t = new Array(n);
+    t[0] = m[0];
+    t[n - 1] = m[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (m[i - 1] * m[i] <= 0) { t[i] = 0; continue; }
+      const w1 = 2 * dx[i] + dx[i - 1];
+      const w2 = dx[i] + 2 * dx[i - 1];
+      t[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+    }
+
+    let d = `M${seg[0].x} ${seg[0].y}`;
+    for (let i = 0; i < n - 1; i++) {
+      const h = dx[i] / 3;
+      d += ` C${seg[i].x + h} ${seg[i].y + t[i] * h} ${seg[i + 1].x - h} ${seg[i + 1].y - t[i + 1] * h} ${seg[i + 1].x} ${seg[i + 1].y}`;
+    }
+    return d;
+  }).join(' ');
+};
+
 const generateRoundedBar = (x, y, w, h, r) => {
   if (h <= 0) return `M ${x},${y} h ${w} v 0 h -${w} Z`;
   const radius = h < r ? 0 : Math.min(r, w / 2);
@@ -196,31 +293,35 @@ export default function Analytics({ changePage, onLogout }) {
   const { user, hasPermission } = useRole();
   const canManageUsers = hasPermission('manage_users');
 
-  // === 1. STATE MANAGEMENT (TANPA LOCALSTORAGE) ===
-  const [orders, setOrders] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  // === 1. STATE MANAGEMENT (pilihan user disimpan lewat usePersistentState) ===
+  const [orders, setOrders] = useState(ordersCache || []);
+  const [isLoading, setIsLoading] = useState(!ordersCache);
   const [suppliersMap, setSuppliersMap] = useState({});
   
   const [isAnalyticsMenuOpen, setIsAnalyticsMenuOpen] = useState(true);
-  const [selectedYear, setSelectedYear] = useState('All');
+  const [selectedYear, setSelectedYear] = usePersistentState('selectedYear', 'All');
   // Tema (terang/gelap), jam, profil & logout sekarang diurus AppLayout + useTheme (sama seperti Dashboard)
   const [isDarkMode, setIsDarkMode] = useTheme();
-  const [selectedSupplier, setSelectedSupplier] = useState('');
+  const [selectedSupplier, setSelectedSupplier] = usePersistentState('selectedSupplier', '');
   const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const supplierSearchRef = useRef(null);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = usePersistentState('activeTab', 'overview');
 
   const MAX_COMPARE_SUPPLIERS = 6;
   const COMPARE_SUPPLIER_COLORS = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#DB2777'];
-  const [compareSuppliers, setCompareSuppliers] = useState([]);
+  const [compareSuppliers, setCompareSuppliers] = usePersistentState('compareSuppliers', []);
   const [compareSupplierSearch, setCompareSupplierSearch] = useState('');
   const [showCompareDropdown, setShowCompareDropdown] = useState(false);
-  const [compareTimeRange, setCompareTimeRange] = useState('MAX');
+  const [compareTimeRange, setCompareTimeRange] = usePersistentState('compareTimeRange', 'MAX');
   const [compareHoverIdx, setCompareHoverIdx] = useState(null); // indeks periode yang sedang di-hover (crosshair grafik compare)
   const compareSearchRef = useRef(null);
   
-  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [selectedCategory, setSelectedCategory] = usePersistentState('selectedCategory', null);
+  const [paretoMode, setParetoMode] = usePersistentState('paretoMode', 'supplier'); // 'supplier' | 'po' -> dasar pengelompokan Pareto di Category Breakdown
+  // Rentang tanggal untuk halaman Category Detail (kosong = ikuti rentang data yang tersedia)
+  const [categoryDetailStart, setCategoryDetailStart] = usePersistentState('categoryDetailStart', '');
+  const [categoryDetailEnd, setCategoryDetailEnd] = usePersistentState('categoryDetailEnd', '');
 
   const analyticsTabs = [
     { id: 'overview', label: 'Overview & Trend', icon: 'fa-chart-line' },
@@ -228,6 +329,12 @@ export default function Analytics({ changePage, onLogout }) {
     { id: 'compareSupplier', label: 'Compare Supplier', icon: 'fa-scale-balanced' },
     { id: 'category', label: 'Category Breakdown', icon: 'fa-tags' },
   ];
+
+  // Jika tab tersimpan sudah tidak valid, kembali ke Overview
+  useEffect(() => {
+    if (!analyticsTabs.some((t) => t.id === activeTab)) setActiveTab('overview');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const profile = useMemo(() => {
     if (user) {
@@ -249,6 +356,7 @@ export default function Analytics({ changePage, onLogout }) {
   };
 
   const handleLogout = () => {
+    clearAnalyticsStorage(); // pilihan Analytics tidak terbawa ke user lain di browser yang sama
     if (typeof onLogout === 'function') {
       onLogout();
     } else if (typeof changePage === 'function') {
@@ -280,22 +388,23 @@ export default function Analytics({ changePage, onLogout }) {
 
   useEffect(() => {
     const fetchOrdersFromBackend = async () => {
-      setIsLoading(true);
+      if (!ordersCache) setIsLoading(true); // kalau sudah ada cache, refresh diam-diam tanpa loading overlay
       try {
         const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
           const formattedOrders = data.map((po) => toOrder(po, suppliersMap));
 
+          ordersCache = formattedOrders;
           setOrders(formattedOrders);
           // Supplier tidak dipilih otomatis: search bar Supplier Analysis dikosongkan sampai user memilih sendiri
         } else {
           console.error('Gagal mengambil data PO dari server, status:', response.status);
-          setOrders([]);
+          if (!ordersCache) setOrders([]);
         }
       } catch (e) {
         console.error('Gagal mengambil data PO dari server:', e);
-        setOrders([]);
+        if (!ordersCache) setOrders([]);
       } finally {
         setIsLoading(false);
       }
@@ -402,6 +511,21 @@ export default function Analytics({ changePage, onLogout }) {
   useEffect(() => {
     setSupplierSearchQuery(selectedSupplier || '');
   }, [selectedSupplier]);
+
+  // Pilihan tersimpan yang datanya sudah tidak ada (mis. PO dihapus) dibersihkan setelah data termuat
+  useEffect(() => {
+    if (supplierList.length === 0) return;
+    setCompareSuppliers((prev) => {
+      const next = prev.filter((sup) => supplierList.includes(sup));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [supplierList]);
+
+  useEffect(() => {
+    if (orders.length === 0) return;
+    if (selectedYear !== 'All' && !availableYears.some((y) => String(y) === String(selectedYear))) setSelectedYear('All');
+    if (selectedCategory && !orders.some((o) => getOrderCategory(o) === selectedCategory)) setSelectedCategory(null);
+  }, [orders, availableYears, selectedYear, selectedCategory]);
 
   const handleSelectSupplier = (sup) => {
     setSelectedSupplier(sup);
@@ -714,6 +838,136 @@ export default function Analytics({ changePage, onLogout }) {
       return isYearMatch && isCategoryMatch;
     });
   }, [orders, selectedCategory, selectedYear]);
+
+  // Pareto 80/20 untuk kategori terpilih: dikelompokkan per Supplier atau per PO, diurutkan dari spend terbesar
+  const categoryParetoData = useMemo(() => {
+    if (!selectedCategory) return { rows: [], total: 0, vitalCount: 0, totalPOs: 0 };
+    const map = {};
+    const allPOs = new Set();
+    categoryBreakdownData.forEach((o) => {
+      const poKey = o.poNumber || `row-${o.id}`;
+      const key = paretoMode === 'po' ? poKey : getOrderSupplier(o);
+      allPOs.add(poKey);
+      if (!map[key]) map[key] = { name: key, spend: 0, poSet: new Set(), supplier: getOrderSupplier(o) };
+      map[key].spend += getOrderTotal(o);
+      map[key].poSet.add(poKey);
+    });
+    const sorted = Object.values(map)
+      .filter((r) => r.spend > 0)
+      .sort((a, b) => b.spend - a.spend);
+    const total = sorted.reduce((sum, r) => sum + r.spend, 0);
+    let running = 0;
+    const rows = sorted.map((r) => {
+      running += r.spend;
+      return {
+        name: r.name,
+        supplier: r.supplier,
+        poCount: r.poSet.size,
+        spend: r.spend,
+        share: total > 0 ? (r.spend / total) * 100 : 0,
+        cumPct: total > 0 ? (running / total) * 100 : 0
+      };
+    });
+    const idx80 = rows.findIndex((r) => r.cumPct >= 80);
+    const vitalCount = rows.length === 0 ? 0 : (idx80 === -1 ? rows.length : idx80 + 1);
+    return { rows, total, vitalCount, totalPOs: allPOs.size };
+  }, [categoryBreakdownData, selectedCategory, paretoMode]);
+
+  // Rentang tanggal yang tersedia untuk kategori terpilih (dipakai sebagai default date-range picker)
+  const categoryDetailDateBounds = useMemo(() => {
+    if (!selectedCategory) return { min: '', max: '' };
+    const dates = orders
+      .filter((o) => getOrderCategory(o) === selectedCategory)
+      .map((o) => o.date)
+      .filter((d) => d && d !== '-')
+      .sort();
+    return { min: dates[0] || '', max: dates[dates.length - 1] || '' };
+  }, [orders, selectedCategory]);
+
+  const effectiveDetailStart = categoryDetailStart || categoryDetailDateBounds.min;
+  const effectiveDetailEnd = categoryDetailEnd || categoryDetailDateBounds.max;
+
+  // Data lengkap untuk halaman "Category Detail" (pict 1): stat cards, trend bulanan, breakdown subkategori,
+  // top suppliers, dan transaksi terbaru — semuanya difilter oleh kategori terpilih + rentang tanggal di atas.
+  const categoryDetail = useMemo(() => {
+    if (!selectedCategory || !effectiveDetailStart || !effectiveDetailEnd) return null;
+
+    const inRange = (o, s, e) => o.date && o.date !== '-' && o.date >= s && o.date <= e;
+    const currentOrders = orders.filter((o) => getOrderCategory(o) === selectedCategory && inRange(o, effectiveDetailStart, effectiveDetailEnd));
+
+    // Periode sebelumnya: durasi sama persis, langsung sebelum tanggal mulai (untuk % perubahan di stat card)
+    const startMs = new Date(effectiveDetailStart).getTime();
+    const endMs = new Date(effectiveDetailEnd).getTime();
+    const durationMs = Math.max(endMs - startMs, 0);
+    const prevEndDate = new Date(startMs - 24 * 60 * 60 * 1000);
+    const prevStartDate = new Date(prevEndDate.getTime() - durationMs);
+    const toISO = (d) => d.toISOString().split('T')[0];
+    const prevOrders = orders.filter((o) => getOrderCategory(o) === selectedCategory && inRange(o, toISO(prevStartDate), toISO(prevEndDate)));
+
+    const sumSpend = (list) => list.reduce((s, o) => s + getOrderTotal(o), 0);
+    const totalSpend = sumSpend(currentOrders);
+    const totalPO = currentOrders.length;
+    const avgPO = totalPO > 0 ? totalSpend / totalPO : 0;
+
+    const prevSpend = sumSpend(prevOrders);
+    const prevPO = prevOrders.length;
+    const prevAvg = prevPO > 0 ? prevSpend / prevPO : 0;
+
+    const pctChange = (curr, prev) => (prev > 0 ? ((curr - prev) / prev) * 100 : (curr > 0 ? 100 : 0));
+
+    // Trend bulanan: dua tahun terakhir yang muncul di rentang data kategori ini
+    const yearsInRange = Array.from(new Set(currentOrders.map((o) => getYearFromOrder(o)))).filter(Boolean).sort((a, b) => a - b);
+    const yearPrevT = yearsInRange.length > 1 ? yearsInRange[yearsInRange.length - 2] : null;
+    const yearCurrT = yearsInRange[yearsInRange.length - 1] || null;
+    const monthly = Array.from({ length: 12 }, () => ({ prev: 0, curr: 0 }));
+    currentOrders.forEach((o) => {
+      const yr = getYearFromOrder(o);
+      const d = new Date(o.date);
+      if (Number.isNaN(d.getTime())) return;
+      const m = d.getMonth();
+      if (yr === yearPrevT) monthly[m].prev += getOrderTotal(o);
+      if (yr === yearCurrT) monthly[m].curr += getOrderTotal(o);
+    });
+
+    // Breakdown subkategori (Category Contribution)
+    const subMap = {};
+    currentOrders.forEach((o) => {
+      const sub = getOrderSubcategory(o);
+      if (!subMap[sub]) subMap[sub] = 0;
+      subMap[sub] += getOrderTotal(o);
+    });
+    const subRows = Object.entries(subMap)
+      .map(([name, value]) => ({ name, value, pct: totalSpend > 0 ? (value / totalSpend) * 100 : 0 }))
+      .sort((a, b) => b.value - a.value);
+
+    // Top Suppliers
+    const supMap = {};
+    currentOrders.forEach((o) => {
+      const sup = getOrderSupplier(o);
+      if (!supMap[sup]) supMap[sup] = { name: sup, spend: 0, count: 0 };
+      supMap[sup].spend += getOrderTotal(o);
+      supMap[sup].count += 1;
+    });
+    const topSuppliers = Object.values(supMap)
+      .map((s) => ({ ...s, avg: s.count > 0 ? s.spend / s.count : 0 }))
+      .sort((a, b) => b.spend - a.spend)
+      .slice(0, 5);
+
+    // Recent Transactions
+    const recentTransactions = [...currentOrders]
+      .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      .slice(0, 8);
+
+    return {
+      totalSpend, totalPO, avgPO,
+      spendChange: pctChange(totalSpend, prevSpend),
+      poChange: pctChange(totalPO, prevPO),
+      avgChange: pctChange(avgPO, prevAvg),
+      monthly, yearPrevT, yearCurrT,
+      subRows, topSuppliers, recentTransactions
+    };
+  }, [orders, selectedCategory, effectiveDetailStart, effectiveDetailEnd]);
+
   return (
     <>
       {isLoading && (
@@ -832,9 +1086,24 @@ export default function Analytics({ changePage, onLogout }) {
                       const x = (idx / 11) * 920 + 40;
                       const hasCurrent = yoyChartData.totalsCurrent[idx] !== null;
                       const yCurrent = hasCurrent ? 190 - (yoyChartData.totalsCurrent[idx] / yoyChartData.maxVal) * 160 : 0;
+                      const hasPrev = yoyChartData.totalsPrev[idx] !== null;
+                      const yPrev = hasPrev ? 190 - (yoyChartData.totalsPrev[idx] / yoyChartData.maxVal) * 160 : 0;
+                      // Nilai yang lebih tinggi labelnya di atas titik, yang lebih rendah di bawah titik (supaya tidak bertumpuk)
+                      const currAbove = !hasPrev || yoyChartData.totalsCurrent[idx] >= yoyChartData.totalsPrev[idx];
                       return (
                         <g key={idx}>
+                          {hasPrev && <circle cx={x} cy={yPrev} r="3.5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#64748B" strokeWidth="2" />}
+                          {hasPrev && (
+                            <text x={x} y={currAbove ? yPrev + 16 : yPrev - 10} textAnchor="middle" className={`text-[10px] font-semibold ${isDarkMode ? 'fill-slate-400' : 'fill-slate-500'}`}>
+                              {formatChartLabel(yoyChartData.totalsPrev[idx])}
+                            </text>
+                          )}
                           {hasCurrent && <circle cx={x} cy={yCurrent} r="5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#DC2626" strokeWidth="3" />}
+                          {hasCurrent && (
+                            <text x={x} y={currAbove ? yCurrent - 12 : yCurrent + 18} textAnchor="middle" className="text-[10px] font-bold fill-red-500">
+                              {formatChartLabel(yoyChartData.totalsCurrent[idx])}
+                            </text>
+                          )}
                           <text x={x} y="222" textAnchor="middle" className={`text-[11px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-400'}`}>{m}</text>
                         </g>
                       );
@@ -996,13 +1265,7 @@ export default function Analytics({ changePage, onLogout }) {
                            return Math.abs(v) >= 1000 ? `${sign}${(v / 1000).toFixed(1)}k%` : `${sign}${v.toFixed(0)}%`;
                         };
                         const pts = vals.map((v, idx) => (v === null ? null : { x: 60 + idx * (880 / 11), y: yOf(v), v }));
-                        let d = '';
-                        let penDown = false;
-                        pts.forEach((pt) => {
-                           if (!pt) { penDown = false; return; }
-                           d += `${penDown ? 'L' : 'M'}${pt.x} ${pt.y} `;
-                           penDown = true;
-                        });
+                        const d = generateMonotoneSvgPath(pts);
                         const zeroY = yOf(0);
                         return (
                            <g>
@@ -1010,7 +1273,7 @@ export default function Analytics({ changePage, onLogout }) {
                               <text x="948" y={zeroY + 3} textAnchor="start" className="text-[10px] fill-amber-500">0%</text>
                               {rawMax > 0 && <text x="948" y={yOf(rawMax) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMax)}</text>}
                               {rawMin < 0 && <text x="948" y={yOf(rawMin) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMin)}</text>}
-                              {d && <path d={d} fill="none" stroke="#F59E0B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
+                              {d && <path d={d} fill="none" stroke="#F59E0B" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0px 3px 4px rgba(245, 158, 11, 0.25))' }} />}
                               {pts.map((pt, idx) => pt && (
                                  <g key={`yoy-${idx}`}>
                                     <circle cx={pt.x} cy={pt.y} r="4.5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#F59E0B" strokeWidth="2" />
@@ -1035,7 +1298,7 @@ export default function Analytics({ changePage, onLogout }) {
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Average PO Value by Category (USD)</h3>
-                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Click on any category to view its breakdown details</p>
+                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Click on any category to view its Pareto analysis</p>
                     </div>
                   </div>
 
@@ -1066,59 +1329,318 @@ export default function Analytics({ changePage, onLogout }) {
                 </>
               ) : (
                 <>
-                  <div className="flex items-center justify-between mb-6">
-                    <div>
-                      <button 
+                  {/* Breadcrumb */}
+                  <div className={`flex items-center gap-2 text-xs font-medium mb-4 flex-wrap ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    <button onClick={() => setSelectedCategory(null)} className={`hover:underline ${isDarkMode ? 'hover:text-white' : 'hover:text-gray-900'}`}>Analytics</button>
+                    <i className="fa-solid fa-chevron-right text-[9px]"></i>
+                    <button onClick={() => setSelectedCategory(null)} className={`hover:underline ${isDarkMode ? 'hover:text-white' : 'hover:text-gray-900'}`}>Category Breakdown</button>
+                    <i className="fa-solid fa-chevron-right text-[9px]"></i>
+                    <span className={`font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-700'}`}>{selectedCategory}</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
+                    <div className="flex items-start gap-3">
+                      <button
                         onClick={() => setSelectedCategory(null)}
-                        className={`mb-2 text-sm font-semibold flex items-center gap-2 transition-colors ${isDarkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-800'}`}
+                        className={`mt-0.5 w-9 h-9 shrink-0 rounded-lg border flex items-center justify-center transition-colors ${isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
                       >
-                        <i className="fa-solid fa-arrow-left"></i> Back to Categories
+                        <i className="fa-solid fa-arrow-left"></i>
                       </button>
-                      <h3 className={`font-bold text-lg ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        Breakdown: {selectedCategory}
-                      </h3>
-                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                        Showing all POs under {selectedCategory} for {selectedYear === 'All' ? 'All Time' : selectedYear}
-                      </p>
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className={`font-bold text-lg ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{selectedCategory}</h3>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600'}`}>Category Detail</span>
+                        </div>
+                        <p className={`text-xs mt-1 max-w-md ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                          Detailed analysis of PO value, supplier contribution and transaction trend for {selectedCategory}.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${isDarkMode ? 'border-slate-700 bg-[#0F172A] text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>
+                      <i className="fa-regular fa-calendar"></i>
+                      <input
+                        type="date"
+                        value={effectiveDetailStart}
+                        max={effectiveDetailEnd || undefined}
+                        onChange={(e) => setCategoryDetailStart(e.target.value)}
+                        className={`bg-transparent outline-none ${isDarkMode ? 'text-slate-200 [color-scheme:dark]' : 'text-gray-700'}`}
+                      />
+                      <i className="fa-solid fa-arrow-right text-[10px] opacity-50"></i>
+                      <input
+                        type="date"
+                        value={effectiveDetailEnd}
+                        min={effectiveDetailStart || undefined}
+                        onChange={(e) => setCategoryDetailEnd(e.target.value)}
+                        className={`bg-transparent outline-none ${isDarkMode ? 'text-slate-200 [color-scheme:dark]' : 'text-gray-700'}`}
+                      />
+                      {(categoryDetailStart || categoryDetailEnd) && (
+                        <button
+                          onClick={() => { setCategoryDetailStart(''); setCategoryDetailEnd(''); }}
+                          title="Reset to full range"
+                          className={`ml-1 ${isDarkMode ? 'text-slate-500 hover:text-slate-300' : 'text-gray-400 hover:text-gray-600'}`}
+                        >
+                          <i className="fa-solid fa-rotate-left text-[10px]"></i>
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="overflow-x-auto rounded-lg border border-gray-200/60 dark:border-slate-700">
-                    <table className={`w-full text-left text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
-                      <thead className={`text-xs uppercase bg-gray-50 dark:bg-slate-800/50 border-b ${isDarkMode ? 'border-slate-700 text-slate-400' : 'border-gray-200 text-gray-500'}`}>
-                        <tr>
-                          <th className="px-4 py-3 font-semibold">PO Number</th>
-                          <th className="px-4 py-3 font-semibold">Date</th>
-                          <th className="px-4 py-3 font-semibold">Supplier</th>
-                          <th className="px-4 py-3 font-semibold">Status</th>
-                          <th className="px-4 py-3 font-semibold text-right">Value (USD)</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {categoryBreakdownData.length === 0 ? (
-                          <tr>
-                            <td colSpan="5" className="text-center py-6">No data found.</td>
-                          </tr>
-                        ) : (
-                          categoryBreakdownData.map((order, i) => (
-                            <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800 hover:bg-slate-800/30' : 'border-gray-100 hover:bg-gray-50'}`}>
-                              <td className="px-4 py-3 font-medium">{order.poNumber || '-'}</td>
-                              <td className="px-4 py-3">{order.date || '-'}</td>
-                              <td className="px-4 py-3">{getOrderSupplier(order)}</td>
-                              <td className="px-4 py-3">
-                                <span className="px-2 py-1 rounded-md text-[11px] font-semibold bg-gray-100 text-gray-600 dark:bg-slate-700 dark:text-slate-300">
-                                  {getOrderStatus(order) || 'Pending'}
-                                </span>
-                              </td>
-                              <td className="px-4 py-3 text-right font-semibold text-red-500">
-                                {formatUSD(getOrderTotal(order))}
-                              </td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  {!categoryDetail ? (
+                    <div className={`h-48 flex items-center justify-center text-sm border border-dashed rounded-xl ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-700 text-slate-500' : 'bg-gray-50/50 border-gray-200 text-gray-400'}`}>
+                      No data found for this category in the selected date range.
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* Stat cards */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        {[
+                          { label: 'Average PO Value', value: formatUSD(categoryDetail.avgPO), change: categoryDetail.avgChange, icon: 'fa-coins' },
+                          { label: 'Total PO', value: categoryDetail.totalPO.toLocaleString(), change: categoryDetail.poChange, icon: 'fa-file-lines' },
+                          { label: 'Total Spend', value: formatUSD(categoryDetail.totalSpend), change: categoryDetail.spendChange, icon: 'fa-sack-dollar' },
+                        ].map((card, idx) => (
+                          <div key={idx} className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                            <div className="flex items-center gap-2 mb-2">
+                              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-white text-gray-500 border border-gray-200'}`}>
+                                <i className={`fa-solid ${card.icon} text-xs`}></i>
+                              </div>
+                              <span className={`text-xs font-semibold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{card.label}</span>
+                            </div>
+                            <p className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{card.value}</p>
+                            <p className={`text-xs mt-1 font-semibold flex items-center gap-1 ${card.change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                              <i className={`fa-solid ${card.change >= 0 ? 'fa-arrow-up' : 'fa-arrow-down'} text-[10px]`}></i>
+                              {Math.abs(card.change).toFixed(1)}% vs previous period
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* PO Value Trend + Supplier Contribution */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                            <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>PO Value Trend</h4>
+                            <div className={`flex items-center gap-3 text-[10px] font-semibold ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                              {categoryDetail.yearPrevT && <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span>{categoryDetail.yearPrevT}</div>}
+                              {categoryDetail.yearCurrT && <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>{categoryDetail.yearCurrT}</div>}
+                            </div>
+                          </div>
+                          {(() => {
+                            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                            const prevVals = categoryDetail.monthly.map((m) => m.prev);
+                            const currVals = categoryDetail.monthly.map((m) => m.curr);
+                            const maxV = Math.max(...prevVals, ...currVals, 1);
+                            const chartL = 55, chartR = 610, yTop = 15, yBottom = 190;
+                            const xOf = (i) => chartL + (i * (chartR - chartL)) / 11;
+                            const yOf = (v) => yBottom - (v / maxV) * (yBottom - yTop);
+                            const prevPts = prevVals.map((v, i) => ({ x: xOf(i), y: yOf(v) }));
+                            const currPts = currVals.map((v, i) => ({ x: xOf(i), y: yOf(v) }));
+                            const areaPath = `${generateMonotoneSvgPath(currPts)} L ${xOf(11)} ${yBottom} L ${xOf(0)} ${yBottom} Z`;
+                            return (
+                              <div className="w-full h-52">
+                                <svg viewBox="0 0 640 220" className="w-full h-full overflow-visible font-sans">
+                                  <defs>
+                                    <linearGradient id="trendAreaFill" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#F87171" stopOpacity="0.35" />
+                                      <stop offset="100%" stopColor="#F87171" stopOpacity="0" />
+                                    </linearGradient>
+                                  </defs>
+                                  {[0, 25, 50, 75, 100].map((pct) => {
+                                    const y = yOf((maxV * pct) / 100);
+                                    return (
+                                      <g key={`tg-${pct}`}>
+                                        <line x1={chartL} y1={y} x2={chartR} y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" strokeWidth="1" />
+                                        <text x={chartL - 8} y={y + 3} textAnchor="end" className={`text-[9px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>{formatShortNumber((maxV * pct) / 100)}</text>
+                                      </g>
+                                    );
+                                  })}
+                                  <path d={areaPath} fill="url(#trendAreaFill)" stroke="none" />
+                                  <path d={generateMonotoneSvgPath(prevPts)} fill="none" stroke="#3B82F6" strokeWidth="2.5" strokeLinecap="round" />
+                                  <path d={generateMonotoneSvgPath(currPts)} fill="none" stroke="#EF4444" strokeWidth="2.5" strokeLinecap="round" />
+                                  {prevPts.map((pt, i) => <circle key={`pv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#3B82F6" strokeWidth="2" />)}
+                                  {currPts.map((pt, i) => <circle key={`cv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />)}
+                                  {months.map((m, i) => (
+                                    <text key={`tm-${i}`} x={xOf(i)} y="207" textAnchor="middle" className={`text-[9px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}>{m}</text>
+                                  ))}
+                                </svg>
+                              </div>
+                            );
+                          })()}
+                        </div>
+
+                        <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                          <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                            <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Supplier Contribution (Pareto Analysis)</h4>
+                            <div className={`inline-flex p-0.5 rounded-lg text-[10px] font-semibold ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
+                              {[['supplier', 'By PO Value'], ['po', 'By PO']].map(([key, label]) => (
+                                <button
+                                  key={key}
+                                  onClick={() => setParetoMode(key)}
+                                  className={`px-2 py-1 rounded-md transition-colors ${paretoMode === key ? 'bg-red-600 text-white shadow-sm' : (isDarkMode ? 'text-slate-400 hover:text-slate-200' : 'text-gray-500 hover:text-gray-800')}`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          {(() => {
+                            const { rows, total } = categoryParetoData;
+                            if (rows.length === 0) {
+                              return <div className={`h-52 flex items-center justify-center text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No data.</div>;
+                            }
+                            const shown = rows.slice(0, 6);
+                            const n = shown.length;
+                            const chartL = 40, chartR = 610, yTop = 15, yBottom = 165;
+                            const band = (chartR - chartL) / n;
+                            const barW = Math.min(50, band * 0.55);
+                            const cx = (i) => chartL + band * i + band / 2;
+                            const yOfPct = (pct) => yBottom - (pct / 100) * (yBottom - yTop);
+                            const linePts = shown.map((r, i) => ({ x: cx(i), y: yOfPct(r.cumPct) }));
+                            const trunc = (t, m) => (t.length > m ? `${t.slice(0, m - 1)}…` : t);
+                            return (
+                              <div className="w-full h-52">
+                                <svg viewBox="0 0 640 200" className="w-full h-full overflow-visible font-sans">
+                                  {[0, 25, 50, 75, 100].map((pct) => {
+                                    const y = yOfPct(pct);
+                                    return <line key={`sg-${pct}`} x1={chartL} y1={y} x2={chartR} y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" strokeWidth="1" />;
+                                  })}
+                                  {shown.map((r, i) => {
+                                    const h = total > 0 ? (r.spend / total) * (yBottom - yTop) : 0;
+                                    const x = cx(i) - barW / 2;
+                                    const y = yBottom - h;
+                                    return (
+                                      <g key={`sb-${i}`}>
+                                        <title>{`${r.name}: ${formatUSD(r.spend)} (${r.share.toFixed(1)}%)`}</title>
+                                        <path d={generateRoundedBar(x, y, barW, h, 3)} fill="#3B82F6" />
+                                        <text x={cx(i)} y={y - 6} textAnchor="middle" className={`text-[9px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}>{r.share.toFixed(0)}%</text>
+                                        <text x={cx(i)} y="180" textAnchor="middle" className={`text-[9px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}>{trunc(r.name, 10)}</text>
+                                      </g>
+                                    );
+                                  })}
+                                  <path d={generateMonotoneSvgPath(linePts)} fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" />
+                                  {linePts.map((pt, i) => <circle key={`sc-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />)}
+                                </svg>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Category Contribution + Top Suppliers */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                          <h4 className={`font-bold text-sm mb-3 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Category Contribution</h4>
+                          <div className="overflow-x-auto">
+                            <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                              <thead className={`uppercase border-b ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-200 text-gray-400'}`}>
+                                <tr>
+                                  <th className="py-2 pr-2 font-semibold">Subcategory</th>
+                                  <th className="py-2 pr-2 font-semibold text-right">PO Value</th>
+                                  <th className="py-2 pl-2 font-semibold">% of Total</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {categoryDetail.subRows.map((r, i) => (
+                                  <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                                    <td className="py-2 pr-2 font-medium">{r.name}</td>
+                                    <td className="py-2 pr-2 text-right whitespace-nowrap">{formatUSD(r.value)}</td>
+                                    <td className="py-2 pl-2 w-32">
+                                      <div className="flex items-center gap-2">
+                                        <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-200'}`}>
+                                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${Math.min(r.pct, 100)}%` }}></div>
+                                        </div>
+                                        <span className="w-9 text-right font-semibold">{r.pct.toFixed(1)}%</span>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {categoryDetail.subRows.length === 0 && (
+                                  <tr><td colSpan={3} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No subcategory data.</td></tr>
+                                )}
+                                <tr className="font-bold">
+                                  <td className={`py-2 pr-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total</td>
+                                  <td className={`py-2 pr-2 text-right whitespace-nowrap ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(categoryDetail.totalSpend)}</td>
+                                  <td className={`py-2 pl-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>100%</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                          <h4 className={`font-bold text-sm mb-3 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Top Suppliers</h4>
+                          <div className="overflow-x-auto">
+                            <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                              <thead className={`uppercase border-b ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-200 text-gray-400'}`}>
+                                <tr>
+                                  <th className="py-2 pr-2 font-semibold">#</th>
+                                  <th className="py-2 pr-2 font-semibold">Supplier</th>
+                                  <th className="py-2 pr-2 font-semibold text-right">Total PO</th>
+                                  <th className="py-2 pr-2 font-semibold text-right">Avg PO Value</th>
+                                  <th className="py-2 pl-2 font-semibold text-right">Total Spend</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {categoryDetail.topSuppliers.map((s, i) => (
+                                  <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                                    <td className="py-2 pr-2">{i + 1}</td>
+                                    <td className="py-2 pr-2 font-medium">{s.name}</td>
+                                    <td className="py-2 pr-2 text-right">{s.count}</td>
+                                    <td className="py-2 pr-2 text-right whitespace-nowrap">{formatUSD(s.avg)}</td>
+                                    <td className="py-2 pl-2 text-right whitespace-nowrap font-semibold">{formatUSD(s.spend)}</td>
+                                  </tr>
+                                ))}
+                                {categoryDetail.topSuppliers.length === 0 && (
+                                  <tr><td colSpan={5} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No supplier data.</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Recent Transactions */}
+                      <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
+                        <h4 className={`font-bold text-sm mb-3 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Recent Transactions</h4>
+                        <div className="overflow-x-auto">
+                          <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                            <thead className={`uppercase border-b ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-200 text-gray-400'}`}>
+                              <tr>
+                                <th className="py-2 pr-2 font-semibold">PO Number</th>
+                                <th className="py-2 pr-2 font-semibold">Date</th>
+                                <th className="py-2 pr-2 font-semibold">Supplier</th>
+                                <th className="py-2 pr-2 font-semibold">Subcategory</th>
+                                <th className="py-2 pr-2 font-semibold text-right">PO Value</th>
+                                <th className="py-2 pl-2 font-semibold">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {categoryDetail.recentTransactions.map((o, i) => {
+                                const statusStyle = /complete/i.test(o.status)
+                                  ? (isDarkMode ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-50 text-emerald-600')
+                                  : /progress/i.test(o.status)
+                                    ? (isDarkMode ? 'bg-blue-500/15 text-blue-400' : 'bg-blue-50 text-blue-600')
+                                    : (isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600');
+                                return (
+                                  <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                                    <td className="py-2 pr-2 font-medium">{o.poNumber || '-'}</td>
+                                    <td className="py-2 pr-2 whitespace-nowrap">{formatDateID(o.date)}</td>
+                                    <td className="py-2 pr-2">{getOrderSupplier(o)}</td>
+                                    <td className="py-2 pr-2">{getOrderSubcategory(o)}</td>
+                                    <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(getOrderTotal(o))}</td>
+                                    <td className="py-2 pl-2"><span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusStyle}`}>{o.status}</span></td>
+                                  </tr>
+                                );
+                              })}
+                              {categoryDetail.recentTransactions.length === 0 && (
+                                <tr><td colSpan={6} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No transactions found.</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
