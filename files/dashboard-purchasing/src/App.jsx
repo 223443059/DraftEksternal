@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import Dashboard from './components/Dashboard.jsx';
 import Suppliers from './components/Suppliers.jsx';
@@ -7,9 +8,7 @@ import PurchaseOrders from './components/PurchaseOrders.jsx';
 import Settings from './components/Settings.jsx';
 import CreatePOModal from './components/CreatePOModal.jsx';
 import Login from './components/Login.jsx';
-import SupplierEvaluation from "./components/SupplierEvaluation.jsx";
 import MarketPrice from "./components/MarketPrice.jsx"; 
-import OTD from "./components/OTD.jsx";
 import UserManagement from "./components/UserManagement.jsx";
 // Navbar dimatikan agar tidak muncul double navigasi
 // import Navbar from './components/Navbar.jsx'; 
@@ -103,12 +102,8 @@ function AppContent() {
             setOrders={setOrders} 
           />
         );
-      case 'supplierEvaluation':
-        return <SupplierEvaluation changePage={setActivePage} onLogout={handleLogout} />;
       case 'marketPrice':
         return <MarketPrice changePage={setActivePage} onLogout={handleLogout} />;
-      case 'otd':
-        return <OTD changePage={setActivePage} onLogout={handleLogout} />;
       
       case 'userManagement': {
         // Proteksi dengan RoleContext

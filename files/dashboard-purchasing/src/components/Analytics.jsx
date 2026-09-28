@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useRole } from '../context/RoleContext';
 import { useTheme } from '../hooks/useTheme';
-import AppLayout from './AppLayout'; // header + sidebar + bar menu atas (sama seperti Dashboard)
+import AppLayout, { pendingTabHandoff } from './AppLayout'; // header + sidebar + bar menu atas (sama seperti Dashboard)
 import { API_ENDPOINTS } from '../utils/api.config';
 
 // === PENYIMPANAN PILIHAN USER (bertahan saat pindah halaman/tab, sampai user menghapus atau menggantinya) ===
@@ -307,6 +307,13 @@ export default function Analytics({ changePage, onLogout }) {
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const supplierSearchRef = useRef(null);
   const [activeTab, setActiveTab] = usePersistentState('activeTab', 'overview');
+  // Tab tujuan yang dititipkan dari sidebar (menu gabungan Dashboard/Analytics), dibaca sekali saat halaman dibuka
+  useEffect(() => {
+    if (pendingTabHandoff.analytics) {
+      setActiveTab(pendingTabHandoff.analytics);
+      pendingTabHandoff.analytics = null;
+    }
+  }, []);
 
   const MAX_COMPARE_SUPPLIERS = 6;
   const COMPARE_SUPPLIER_COLORS = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#DB2777'];
@@ -322,9 +329,11 @@ export default function Analytics({ changePage, onLogout }) {
   // Rentang tanggal untuk halaman Category Detail (kosong = ikuti rentang data yang tersedia)
   const [categoryDetailStart, setCategoryDetailStart] = usePersistentState('categoryDetailStart', '');
   const [categoryDetailEnd, setCategoryDetailEnd] = usePersistentState('categoryDetailEnd', '');
+  // Highlight kartu yang sedang dibuka detailnya (Key Highlights di Supplier Analysis)
+  const [activeHighlight, setActiveHighlight] = useState(null); // 'spend' | 'orders' | 'pending' | 'avgPaid' | null
 
   const analyticsTabs = [
-    { id: 'overview', label: 'Overview & Trend', icon: 'fa-chart-line' },
+    { id: 'overview', label: 'Analytics YoY', icon: 'fa-chart-line' },
     { id: 'supplier', label: 'Supplier Analysis', icon: 'fa-users' },
     { id: 'compareSupplier', label: 'Compare Supplier', icon: 'fa-scale-balanced' },
     { id: 'category', label: 'Category Breakdown', icon: 'fa-tags' },
@@ -399,11 +408,11 @@ export default function Analytics({ changePage, onLogout }) {
           setOrders(formattedOrders);
           // Supplier tidak dipilih otomatis: search bar Supplier Analysis dikosongkan sampai user memilih sendiri
         } else {
-          console.error('Gagal mengambil data PO dari server, status:', response.status);
+          console.error('Failed to fetch PO data from server, status:', response.status);
           if (!ordersCache) setOrders([]);
         }
       } catch (e) {
-        console.error('Gagal mengambil data PO dari server:', e);
+        console.error('Failed to fetch PO data from server:', e);
         if (!ordersCache) setOrders([]);
       } finally {
         setIsLoading(false);
@@ -968,6 +977,63 @@ export default function Analytics({ changePage, onLogout }) {
     };
   }, [orders, selectedCategory, effectiveDetailStart, effectiveDetailEnd]);
 
+  // Key Highlights di Supplier Analysis: ikut filter tahun, dan ikut supplier yang dipilih (kalau belum dipilih = semua supplier)
+  const supplierHighlights = useMemo(() => {
+    let totalSpend = 0, paidSpend = 0, totalOrders = 0;
+    orders.forEach((o) => {
+      const yr = getYearFromOrder(o);
+      if (selectedYear !== 'All' && yr !== parseInt(selectedYear, 10)) return;
+      if (selectedSupplier && getOrderSupplier(o) !== selectedSupplier) return;
+      const cost = getOrderTotal(o);
+      const status = getOrderStatus(o).toLowerCase();
+      totalSpend += cost;
+      totalOrders++;
+      if (status.includes('paid') || status.includes('lunas')) paidSpend += cost;
+    });
+    return {
+      totalSpend,
+      totalOrders,
+      pendingPayment: Math.max(totalSpend - paidSpend, 0),
+      avgPaidPct: totalSpend > 0 ? Math.round((paidSpend / totalSpend) * 100) : 0
+    };
+  }, [orders, selectedYear, selectedSupplier]);
+
+  // Baris order di balik kartu Key Highlights yang sedang diklik, mengikuti filter tahun & supplier yang sama
+  const highlightModalData = useMemo(() => {
+    if (!activeHighlight) return null;
+    const base = orders.filter((o) => {
+      const yr = getYearFromOrder(o);
+      if (selectedYear !== 'All' && yr !== parseInt(selectedYear, 10)) return false;
+      if (selectedSupplier && getOrderSupplier(o) !== selectedSupplier) return false;
+      return true;
+    });
+    const isPaid = (o) => {
+      const status = getOrderStatus(o).toLowerCase();
+      return status.includes('paid') || status.includes('lunas');
+    };
+    const configs = {
+      spend: {
+        title: 'Total Spend',
+        rows: [...base].sort((a, b) => getOrderTotal(b) - getOrderTotal(a)),
+      },
+      orders: {
+        title: 'Total Orders',
+        rows: [...base].sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))),
+      },
+      pending: {
+        title: 'Pending Payment',
+        rows: [...base].filter((o) => !isPaid(o)).sort((a, b) => getOrderTotal(b) - getOrderTotal(a)),
+      },
+      avgPaid: {
+        title: 'Average % Paid',
+        rows: [...base].sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))),
+      },
+    };
+    const cfg = configs[activeHighlight];
+    const totalSpendOfRows = cfg.rows.reduce((s, o) => s + getOrderTotal(o), 0);
+    return { ...cfg, count: cfg.rows.length, totalSpendOfRows, isPaid };
+  }, [activeHighlight, orders, selectedYear, selectedSupplier]);
+
   return (
     <>
       {isLoading && (
@@ -1013,25 +1079,33 @@ export default function Analytics({ changePage, onLogout }) {
           {/* OVERVIEW & TREND */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
-              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-3 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-4 lg:grid-cols-4 gap-5">
+                {/* YEAR FILTER BOX */}
+                <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                  <label className={`block text-xs font-semibold uppercase tracking-wider mb-3 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Year Filter</label>
+                  <select 
+                    value={selectedYear}
+                    onChange={(e) => setSelectedYear(e.target.value)}
+                    className={`w-full text-sm font-semibold rounded-lg px-3 py-2 outline-none cursor-pointer transition-colors ${
+                      isDarkMode 
+                        ? 'bg-slate-800 text-slate-200 border border-slate-600 focus:border-slate-400 hover:border-slate-500' 
+                        : 'bg-gray-50 text-gray-700 border border-gray-300 focus:border-gray-500 hover:border-gray-400'
+                    }`}
+                  >
+                    {availableYears.map(year => (
+                      <option key={year} value={year}>
+                        {year === 'All' ? '(All Years)' : year}
+                      </option>
+                    ))}
+                  </select>
+                  <p className={`text-xs mt-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                    {selectedYear === 'All' ? 'Showing all years' : `Year ${selectedYear}`}
+                  </p>
+                </div>
+
                 <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="flex items-center justify-between mb-2">
                      <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spend (USD)</p>
-                     <select 
-                        value={selectedYear}
-                        onChange={(e) => setSelectedYear(e.target.value)}
-                        className={`text-xs font-bold uppercase rounded-md px-2 py-1 outline-none cursor-pointer transition-colors ${
-                          isDarkMode 
-                            ? 'bg-slate-800 text-slate-200 border border-slate-600 focus:border-slate-400' 
-                            : 'bg-gray-100 text-gray-700 border border-gray-300 focus:border-gray-500'
-                        }`}
-                      >
-                        {availableYears.map(year => (
-                          <option key={year} value={year}>
-                            {year === 'All' ? '(All Time)' : year}
-                          </option>
-                        ))}
-                      </select>
                   </div>
                   <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(analyticsStats.totalSpend)}</p>
                 </div>
@@ -1116,7 +1190,8 @@ export default function Analytics({ changePage, onLogout }) {
 
           {/* SUPPLIER ANALYSIS */}
           {activeTab === 'supplier' && (
-          <div className={`p-6 rounded-2xl border shadow-xs space-y-6 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+          <div className={`p-6 rounded-2xl border shadow-xs space-y-6 min-w-0 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
             <div>
                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Supplier Analysis (YoY in USD)</h3>
                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Select a supplier to compare USD spending between {comparisonYears.previous} and {comparisonYears.current}</p>
@@ -1156,7 +1231,21 @@ export default function Analytics({ changePage, onLogout }) {
                )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+               {/* YEAR FILTER (kiri SUPPLIER NAME) */}
+               <div className={`p-5 rounded-xl border shadow-sm ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-800' : 'bg-gray-50/50 border-gray-100'}`}>
+                  <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>YEAR FILTER</p>
+                  <select
+                    value={selectedYear}
+                    onChange={(e) => setSelectedYear(e.target.value)}
+                    className={`w-full text-sm font-bold rounded-lg px-2 py-1.5 outline-none cursor-pointer border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                  >
+                    {availableYears.map((year) => (
+                      <option key={year} value={year}>{year === 'All' ? 'All Years' : year}</option>
+                    ))}
+                  </select>
+               </div>
                <div className={`p-5 rounded-xl border shadow-sm ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-800' : 'bg-gray-50/50 border-gray-100'}`}>
                   <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>SUPPLIER NAME</p>
                   <p className="text-lg font-black text-red-500 truncate">{selectedSupplier || '-'}</p>
@@ -1286,6 +1375,46 @@ export default function Analytics({ changePage, onLogout }) {
                   </svg>
                </div>
             </div>
+          </div>
+
+          {/* KEY HIGHLIGHTS (di sebelah kanan grafik) */}
+          <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+            <h3 className={`font-bold text-base mb-5 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+              Key Highlights ({selectedYear === 'All' ? 'All Time' : selectedYear})
+            </h3>
+            <div>
+              {[
+                { key: 'spend', label: 'Total Spend', value: formatUSD(supplierHighlights.totalSpend), icon: <span className="text-lg font-bold">$</span>, bg: 'bg-red-600' },
+                { key: 'orders', label: 'Total Orders', value: supplierHighlights.totalOrders.toLocaleString(), icon: <i className="fa-solid fa-file-lines text-base"></i>, bg: 'bg-blue-600' },
+                { key: 'pending', label: 'Pending Payment', value: formatUSD(supplierHighlights.pendingPayment), icon: <i className="fa-solid fa-wallet text-base"></i>, bg: 'bg-red-600' },
+                { key: 'avgPaid', label: 'Average % Paid', value: `${supplierHighlights.avgPaidPct}%`, icon: <i className="fa-solid fa-chart-pie text-base"></i>, bg: 'bg-blue-600' },
+              ].map((item, idx, arr) => (
+                <button
+                  type="button"
+                  key={item.label}
+                  onClick={() => setActiveHighlight(item.key)}
+                  className={`w-full text-left flex items-center gap-3 py-4 cursor-pointer transition-colors rounded-lg px-2 -mx-2 ${isDarkMode ? 'hover:bg-slate-800/60' : 'hover:bg-gray-50'} ${idx !== arr.length - 1 ? `border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-100'}` : ''} ${idx === 0 ? 'pt-0' : ''}`}
+                >
+                  <div className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-white ${item.bg}`}>
+                    {item.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{item.label}</p>
+                    <p className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{item.value}</p>
+                  </div>
+                  <div className="text-right shrink-0 flex items-center gap-2">
+                    <p className={`text-[10px] ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{selectedYear === 'All' ? 'All Time' : selectedYear}</p>
+                    <i className={`fa-solid fa-chevron-right text-[10px] ${isDarkMode ? 'text-slate-600' : 'text-gray-300'}`}></i>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {selectedSupplier && (
+              <p className={`text-[11px] mt-4 pt-3 border-t truncate ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-100 text-gray-400'}`}>
+                Supplier: <span className="font-semibold text-red-500">{selectedSupplier}</span>
+              </p>
+            )}
+          </div>
           </div>
           )}
 
@@ -1653,43 +1782,57 @@ export default function Analytics({ changePage, onLogout }) {
             <div>
               <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Compare Supplier (USD)</h3>
               <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>
-                Pilih hingga {MAX_COMPARE_SUPPLIERS} supplier untuk dibandingkan spend-nya {selectedYear === 'All' ? '(All Time)' : `di tahun ${selectedYear}`}.
+                Select up to {MAX_COMPARE_SUPPLIERS} suppliers to compare their spend {selectedYear === 'All' ? '(All Time)' : `in ${selectedYear}`}.
               </p>
             </div>
 
-            <div className="max-w-md relative" ref={compareSearchRef}>
-              <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Tambah Supplier</label>
-              <div className="relative">
-                <i className={`fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
-                <input
-                  type="text"
-                  value={compareSupplierSearch}
-                  onChange={(e) => { setCompareSupplierSearch(e.target.value); setShowCompareDropdown(true); }}
-                  onFocus={() => setShowCompareDropdown(true)}
-                  disabled={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS}
-                  placeholder={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS ? `Maksimal ${MAX_COMPARE_SUPPLIERS} supplier` : 'Cari & tambah supplier...'}
-                  className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
-                />
+            <div className="flex flex-wrap items-end gap-4">
+              <div className="w-44">
+                <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Year Filter</label>
+                <select
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(e.target.value)}
+                  className={`w-full text-sm font-semibold rounded-lg p-2.5 outline-none cursor-pointer border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                >
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>{year === 'All' ? 'All Years' : year}</option>
+                  ))}
+                </select>
               </div>
-              {showCompareDropdown && compareSuppliers.length < MAX_COMPARE_SUPPLIERS && (
-                <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
-                  {compareSupplierOptions.length === 0 ? (
-                    <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                      {supplierList.length === 0 ? 'No supplier data available' : 'No matching suppliers'}
-                    </div>
-                  ) : (
-                    compareSupplierOptions.map((sup, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => handleAddCompareSupplier(sup)}
-                        className={`px-3 py-2 text-sm cursor-pointer transition-colors ${isDarkMode ? 'text-slate-200 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-100'}`}
-                      >
-                        {sup}
-                      </div>
-                    ))
-                  )}
+              <div className="flex-1 min-w-[240px] max-w-md relative" ref={compareSearchRef}>
+                <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Add Supplier</label>
+                <div className="relative">
+                  <i className={`fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
+                  <input
+                    type="text"
+                    value={compareSupplierSearch}
+                    onChange={(e) => { setCompareSupplierSearch(e.target.value); setShowCompareDropdown(true); }}
+                    onFocus={() => setShowCompareDropdown(true)}
+                    disabled={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS}
+                    placeholder={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS ? `Maximum ${MAX_COMPARE_SUPPLIERS} suppliers` : 'Search & add supplier...'}
+                    className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
+                  />
                 </div>
-              )}
+                {showCompareDropdown && compareSuppliers.length < MAX_COMPARE_SUPPLIERS && (
+                  <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
+                    {compareSupplierOptions.length === 0 ? (
+                      <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                        {supplierList.length === 0 ? 'No supplier data available' : 'No matching suppliers'}
+                      </div>
+                    ) : (
+                      compareSupplierOptions.map((sup, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => handleAddCompareSupplier(sup)}
+                          className={`px-3 py-2 text-sm cursor-pointer transition-colors ${isDarkMode ? 'text-slate-200 hover:bg-slate-800' : 'text-gray-700 hover:bg-gray-100'}`}
+                        >
+                          {sup}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             {compareSupplierData.rows.length > 0 && (
@@ -1714,7 +1857,7 @@ export default function Analytics({ changePage, onLogout }) {
 
             {compareSupplierData.rows.length === 0 ? (
               <div className={`h-48 flex items-center justify-center text-sm text-center px-6 border border-dashed rounded-xl ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-700 text-slate-500' : 'bg-gray-50/50 border-gray-200 text-gray-400'}`}>
-                Belum ada supplier dipilih. Cari &amp; tambahkan minimal 2 supplier di atas untuk mulai membandingkan.
+                No suppliers selected yet. Search &amp; add at least 2 suppliers above to start comparing.
               </div>
             ) : (
               <>
@@ -1792,13 +1935,13 @@ export default function Analytics({ changePage, onLogout }) {
 
                     <p className={`text-[11px] mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
                       {compareGrowthChart.mode === 'year'
-                        ? 'Perubahan total pengeluaran 30 hari terakhir dibanding awal rentang (0% = titik awal). Arahkan kursor ke grafik untuk melihat nilainya.'
-                        : 'Pengeluaran per periode dibanding rata-rata masing-masing supplier (0% = rata-rata). Arahkan kursor ke grafik untuk melihat nilainya.'}
+                        ? 'Change in total spend over the last 30 days compared to the start of the range (0% = starting point). Hover over the chart to see values.'
+                        : 'Spend per period compared with each supplier\'s average (0% = average). Hover over the chart to see values.'}
                     </p>
                     <div className="w-full h-80 relative">
                       {compareGrowthChart.labels.length === 0 ? (
                         <div className={`h-full flex items-center justify-center text-sm text-center px-6 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                          Belum ada data order pada rentang waktu ini.
+                          No order data in this time range.
                         </div>
                       ) : (
                       <svg
@@ -1978,6 +2121,71 @@ export default function Analytics({ changePage, onLogout }) {
           )}
         </div>
       </AppLayout>
+
+      {/* KEY HIGHLIGHTS DETAIL MODAL */}
+      {activeHighlight && highlightModalData && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+          onClick={() => setActiveHighlight(null)}
+        >
+          <div
+            className={`w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl border shadow-xl ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-100'}`}>
+              <div>
+                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {highlightModalData.title} ({selectedYear === 'All' ? 'All Time' : selectedYear})
+                </h3>
+                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>
+                  {highlightModalData.count.toLocaleString()} order{highlightModalData.count === 1 ? '' : 's'} · Total {formatUSD(highlightModalData.totalSpendOfRows)}
+                  {selectedSupplier ? ` · ${selectedSupplier}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveHighlight(null)}
+                className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center transition-colors ${isDarkMode ? 'text-slate-400 hover:bg-slate-800 hover:text-white' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-700'}`}
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+            <div className="overflow-y-auto px-6 py-4">
+              <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                <thead className={`uppercase border-b sticky top-0 ${isDarkMode ? 'border-slate-700 text-slate-500 bg-[#1E293B]' : 'border-gray-200 text-gray-400 bg-white'}`}>
+                  <tr>
+                    <th className="py-2 pr-2 font-semibold">PO Number</th>
+                    <th className="py-2 pr-2 font-semibold">Date</th>
+                    <th className="py-2 pr-2 font-semibold">Supplier</th>
+                    <th className="py-2 pr-2 font-semibold text-right">PO Value</th>
+                    <th className="py-2 pl-2 font-semibold">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {highlightModalData.rows.map((o, i) => {
+                    const paid = highlightModalData.isPaid(o);
+                    const statusStyle = paid
+                      ? (isDarkMode ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-50 text-emerald-600')
+                      : (isDarkMode ? 'bg-red-500/15 text-red-400' : 'bg-red-50 text-red-600');
+                    return (
+                      <tr key={o.id || i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                        <td className="py-2 pr-2 font-medium">{o.poNumber || '-'}</td>
+                        <td className="py-2 pr-2 whitespace-nowrap">{formatDateID(o.date)}</td>
+                        <td className="py-2 pr-2">{getOrderSupplier(o)}</td>
+                        <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(getOrderTotal(o))}</td>
+                        <td className="py-2 pl-2"><span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusStyle}`}>{getOrderStatus(o) || '-'}</span></td>
+                      </tr>
+                    );
+                  })}
+                  {highlightModalData.rows.length === 0 && (
+                    <tr><td colSpan={5} className={`py-6 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No orders found.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -17,8 +17,12 @@ import { useRole } from '../context/RoleContext';
 // Tulisan "Packaging A Better Tomorrow" di header (public/images/tagline.png & tagline-dark.png)
 const TAGLINE_RATIO = 843 / 482;   // lebar / tinggi gambar
 const TAGLINE_H = 0.7;             // tinggi tulisan = 70% tinggi baris header
-const BANNER_TAG_GAP = 0;          // jarak gambar header -> tulisan di dalam satu kesatuan (px), 0 = menempel
-const BANNER_MIN_GAP = 16;         // jarak minimum gambar -> judul, dan tulisan -> panel kanan (px)
+// Titipan tab tujuan saat pindah halaman lewat sidebar (disimpan di memori, bukan localStorage).
+// Halaman tujuan membacanya sekali saat dibuka, lalu mengosongkannya.
+export const pendingTabHandoff = { dashboard: null, analytics: null };
+
+const HEADER_ROW_H = 112;          // tinggi baris header (px) = h-28; ukuran gambar header & tulisan mengikuti angka ini (tetap, tidak berubah-ubah)
+const BANNER_GAP_TITLE = 8;        // jarak judul -> gambar header (px)
 
 export default function AppLayout({ activePage, changePage, onLogout, isDarkMode, setIsDarkMode, submenu, children }) {
   const { user, hasPermission } = useRole();
@@ -29,14 +33,11 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
   const [showProfileCard, setShowProfileCard] = useState(false);
   const profileRef = useRef(null);
   const headerRowRef = useRef(null);
-  const otdRef = useRef(null);
-  const supplierRef = useRef(null);
   const titleRef = useRef(null);
   const panelRef = useRef(null);
   const [bannerFailed, setBannerFailed] = useState(false);
   const [bannerRatio, setBannerRatio] = useState({ light: 2.3, dark: 2.3 }); // rasio lebar/tinggi gambar header setelah dipangkas
   const [bannerImgs, setBannerImgs] = useState({ light: null, dark: null }); // bg6.png versi latar transparan (light & dark)
-  const [bannerBox, setBannerBox] = useState({ left: 300, groupW: 400, width: 200, tagW: 130, h: 112, show: false }); // satu kesatuan gambar header + tulisan: dari kiri "Supplier Evaluation" sampai kanan "OTD Performance"
   const [avatarFailed, setAvatarFailed] = useState(false);
 
   // Hapus latar terang bg6.png di browser, jadi menyatu dengan latar apa pun (tidak perlu file PNG terpisah)
@@ -118,21 +119,6 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
   // Ukur lebar scrollbar area isi agar tepi kanan header/menu sejajar dengan tepi kanan banner
   useEffect(() => {
     const measure = () => {
-      if (headerRowRef.current && titleRef.current && panelRef.current && otdRef.current && supplierRef.current) {
-        const row = headerRowRef.current.getBoundingClientRect();
-        const t = titleRef.current.getBoundingClientRect();
-        const pr = panelRef.current.getBoundingClientRect();
-        const o = otdRef.current.getBoundingClientRect();
-        const sp = supplierRef.current.getBoundingClientRect();
-        // gambar header + tulisan = satu kesatuan, sejajar dari kiri "Supplier Evaluation" sampai kanan "OTD Performance"
-        // (dijaga tidak menabrak judul di kiri maupun panel kanan)
-        const left = Math.max(Math.round(sp.left - row.left), Math.round(t.right - row.left + BANNER_MIN_GAP));
-        const right = Math.round(Math.min(o.right, pr.left - BANNER_MIN_GAP) - row.left);
-        const groupW = right - left;
-        const tagW = Math.round(row.height * TAGLINE_H * TAGLINE_RATIO);
-        const imgW = groupW - tagW - BANNER_TAG_GAP;
-        setBannerBox({ left, groupW, tagW, h: Math.round(row.height), width: Math.max(0, imgW), show: imgW >= 120 });
-      }
       if (mainRef.current) setScrollbarW(mainRef.current.offsetWidth - mainRef.current.clientWidth);
     };
     measure();
@@ -176,14 +162,32 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
 
   // Ukuran tile gambar header: proporsi asli dijaga (tidak melar), jumlah ulangan dibulatkan agar pas memenuhi ruang tanpa sisa
   const bannerTileRatio = bannerRatio[isDarkMode ? 'dark' : 'light'] || 2.3;
-  const bannerTiles = Math.max(1, Math.round(bannerBox.width / ((bannerBox.h || 112) * bannerTileRatio)));
-  const bannerTileW = bannerBox.width / bannerTiles;
+  // Ukuran gambar header TETAP (tidak diukur dari posisi elemen lain, jadi tidak bergeser antar halaman / ukuran layar):
+  // satu gambar dengan proporsi asli + tulisan tagline, diletakkan tepat setelah judul.
+  const bannerImgW = Math.round(HEADER_ROW_H * bannerTileRatio);
+  const bannerTagW = Math.round(HEADER_ROW_H * TAGLINE_H * TAGLINE_RATIO);
 
   // === ITEM SIDEBAR & BAR MENU ATAS (sama seperti Dashboard) ===
   // "Master Data" menggabungkan Suppliers + Purchase Orders jadi satu grup yang bisa dibuka/tutup di sidebar.
   // Halaman (activePage) di App.jsx TIDAK berubah: klik child tetap changePage('suppliers') / changePage('purchaseOrders').
   const sidebarItems = [
-    { key: 'dashboard', label: 'Dashboard', icon: 'fa-border-all' },
+    // Dashboard + Analytics digabung: parent "Analytics" dihilangkan, hanya child-nya yang dipakai.
+    // Tiap child punya page tujuan + tab di halaman itu.
+    {
+      key: 'dashboard',
+      label: 'Dashboard',
+      icon: 'fa-border-all',
+      children: [
+        { key: 'dashboard-overview', page: 'dashboard', tab: 'overview', label: 'Overview', icon: 'fa-gauge-high' },
+        { key: 'dashboard-category', page: 'dashboard', tab: 'category', label: 'Spend by Category', icon: 'fa-chart-pie' },
+        { key: 'dashboard-supplier', page: 'dashboard', tab: 'supplier', label: 'Spend by Supplier', icon: 'fa-users' },
+        { key: 'analytics-overview', page: 'analytics', tab: 'overview', label: 'Analytics YoY', icon: 'fa-chart-line' },
+        { key: 'analytics-supplier', page: 'analytics', tab: 'supplier', label: 'Supplier Analysis', icon: 'fa-users' },
+        { key: 'analytics-compare', page: 'analytics', tab: 'compareSupplier', label: 'Compare Supplier', icon: 'fa-scale-balanced' },
+        { key: 'analytics-category', page: 'analytics', tab: 'category', label: 'Category Breakdown', icon: 'fa-tags' },
+      ],
+    },
+    { key: 'report', label: 'Purchase Report', icon: 'fa-file-lines' },
     {
       key: 'masterData',
       label: 'Master Data',
@@ -193,23 +197,37 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
         { key: 'purchaseOrders', label: 'Purchase Order', icon: 'fa-cart-shopping' },
       ],
     },
-    { key: 'analytics', label: 'Analytics', icon: 'fa-chart-line' },
-    { key: 'report', label: 'Report', icon: 'fa-file-lines' },
     { key: 'settings', label: 'Settings', icon: 'fa-gear' },
   ];
 
-  // Status buka/tutup grup sidebar yang punya children (mis. "Master Data").
-  // Kalau user belum pernah klik toggle-nya, grup otomatis terbuka saat salah satu child-nya sedang aktif.
-  const [openSidebarGroups, setOpenSidebarGroups] = useState({});
+  // Status buka/tutup grup sidebar yang punya children (mis. "Master Data"), DISIMPAN di localStorage
+  // supaya tidak reset saat pindah halaman (AppLayout dibuat ulang tiap halaman lain di-render).
+  // Begitu grup pernah dibuka/ditutup (otomatis maupun manual), statusnya tetap sampai user klik lagi.
+  const SIDEBAR_GROUPS_STORAGE_KEY = 'sidebarOpenGroups_v1';
+  const [openSidebarGroups, setOpenSidebarGroups] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(SIDEBAR_GROUPS_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_GROUPS_STORAGE_KEY, JSON.stringify(openSidebarGroups));
+    } catch (e) {
+      /* storage penuh/dinonaktifkan: abaikan, state tetap jalan di memori */
+    }
+  }, [openSidebarGroups]);
+
   const isGroupOpen = (item) =>
     openSidebarGroups[item.key] !== undefined
       ? openSidebarGroups[item.key]
-      : !!item.children?.some((c) => c.key === activePage);
+      : !!item.children?.some((c) => (c.page || c.key) === activePage);
+
   const topItems = [
     { key: 'dashboard', label: 'Dashboard', icon: 'fa-solid fa-house' },
     { key: 'marketPrice', label: 'Market Price', icon: 'fa-solid fa-chart-line' },
-    { key: 'supplierEvaluation', label: 'Supplier Evaluation', icon: 'fa-solid fa-clipboard-list' },
-    { key: 'otd', label: 'OTD Performance', icon: 'fa-regular fa-clock' },
   ];
 
   const sideBtnClass = (isActive) =>
@@ -244,22 +262,19 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
             </p>
           </div>
 
-          {/* Gambar header (bg6.png) + tulisan "Packaging A Better Tomorrow" (tagline.png) = satu kesatuan,
-              sejajar dari kiri menu "Supplier Evaluation" sampai kanan menu "OTD Performance" */}
+          {/* Gambar header (bg6.png) + tulisan "Packaging A Better Tomorrow" (tagline.png):
+              ukuran tetap, ditaruh langsung setelah judul (bukan posisi absolut hasil ukur) supaya tidak bergeser */}
           <div
-            className="hidden lg:block absolute top-0 z-0 h-full pointer-events-none select-none"
-            style={{ left: bannerBox.left, width: bannerBox.groupW, display: bannerBox.show ? undefined : 'none' }}
+            className="hidden lg:flex relative z-0 h-full shrink min-w-0 overflow-hidden items-center pointer-events-none select-none"
+            style={{ marginLeft: BANNER_GAP_TITLE, width: bannerImgW + bannerTagW }}
           >
-            {/* gambar header diulang (repeat-x) tepat memenuhi seluruh ruang, tetap di dalam tinggi header, menempel ke tulisan */}
             <div
-              className="absolute left-0"
+              className="h-full shrink-0"
               style={{
-                width: bannerBox.width,
-                top: 0,
-                height: '100%',
+                width: bannerImgW,
                 backgroundImage: bannerSrc ? `url("${bannerSrc}")` : undefined,
-                backgroundRepeat: 'repeat-x',
-                backgroundSize: `${bannerTileW}px auto`,
+                backgroundRepeat: 'no-repeat',
+                backgroundSize: `${bannerImgW}px auto`,
                 backgroundPosition: 'left bottom',
                 mixBlendMode: !bannerImgs[isDarkMode ? 'dark' : 'light'] && !isDarkMode ? 'multiply' : undefined,
                 WebkitMaskImage: 'linear-gradient(to right, transparent 0%, #000 10%, #000 100%), linear-gradient(to bottom, #000 0%, #000 82%, transparent 100%)',
@@ -271,8 +286,8 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
             <img
               src={isDarkMode ? '/images/tagline-dark.png' : '/images/tagline.png'}
               alt="Packaging A Better Tomorrow"
-              className="absolute right-0 top-1/2 h-auto max-w-none"
-              style={{ width: bannerBox.tagW, transform: 'translateY(-50%)' }}
+              className="shrink-0 h-auto max-w-none"
+              style={{ width: bannerTagW }}
             />
           </div>
 
@@ -354,7 +369,7 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
             {sidebarItems.map((item) => {
               // Grup statis dengan children (mis. "Master Data" -> Supplier / Purchase Order)
               if (item.children) {
-                const isParentActive = item.children.some((c) => c.key === activePage);
+                const isParentActive = item.children.some((c) => (c.page || c.key) === activePage);
                 const open = isGroupOpen(item);
                 return (
                   <div key={item.key}>
@@ -372,14 +387,26 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
                       <div className={`ml-4 pl-3 border-l-2 mt-1 flex flex-col gap-1 ${isDarkMode ? 'border-slate-700' : 'border-[#B4CFEA]'}`}>
                         {item.children.map((child) => {
                           // Child bisa punya submenu sendiri dari halaman aktif (mis. Purchase Order -> List / Excel Upload)
-                          const isChildActive = activePage === child.key;
-                          const hasChildSub = !!submenu && submenu.page === child.key;
+                          const childPage = child.page || child.key;
+                          // child dengan "tab": aktif kalau halaman & tab-nya cocok; selain itu (mis. Supplier / Purchase Order) cukup halamannya
+                          const isChildActive = child.tab
+                            ? activePage === childPage && submenu?.activeId === child.tab
+                            : activePage === childPage;
+                          const hasChildSub = !child.tab && !!submenu && submenu.page === child.key;
                           return (
                             <div key={child.key}>
                               <button
                                 onClick={() => {
-                                  if (hasChildSub && isChildActive) submenu.onToggle?.();
-                                  else changePage && changePage(child.key);
+                                  if (child.tab) {
+                                    if (activePage === childPage && submenu?.onSelect) {
+                                      submenu.onSelect(child.tab); // sudah di halaman yang sama: cukup ganti tab
+                                    } else {
+                                      // pindah halaman: titipkan tab tujuan di memori, halaman tujuan membacanya saat dibuka
+                                      pendingTabHandoff[childPage] = child.tab;
+                                      changePage && changePage(childPage);
+                                    }
+                                  } else if (hasChildSub && isChildActive) submenu.onToggle?.();
+                                  else changePage && changePage(childPage);
                                 }}
                                 className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm rounded-lg transition-colors text-left cursor-pointer ${
                                   isChildActive
@@ -484,7 +511,6 @@ export default function AppLayout({ activePage, changePage, onLogout, isDarkMode
                   <React.Fragment key={item.key}>
                     {idx > 0 && <span className={`self-center w-px h-8 ${isDarkMode ? 'bg-slate-700' : 'bg-[#B4CFEA]'}`}></span>}
                     <button
-                      ref={item.key === 'otd' ? otdRef : item.key === 'supplierEvaluation' ? supplierRef : undefined}
                       onClick={() => changePage?.(item.key)}
                       className={isActive
                         ? 'bg-[#004797] text-white px-5 rounded-2xl flex items-center gap-3 text-[15px] font-semibold cursor-pointer transition-all shadow-xs'
