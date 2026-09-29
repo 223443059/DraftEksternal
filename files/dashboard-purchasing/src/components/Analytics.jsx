@@ -84,6 +84,15 @@ const usdFormatter = new Intl.NumberFormat('en-US', {
 
 const formatUSD = (number) => usdFormatter.format(number || 0);
 
+// Khusus nilai SPEND: tanpa angka di belakang titik desimal (mis. $3,780,750 bukan $3,780,749.85)
+const usdWholeFormatter = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 0
+});
+const formatSpend = (number) => usdWholeFormatter.format(number || 0);
+
 const formatShortNumber = (val) => {
   if (val >= 1_000_000_000) return `$${(val / 1_000_000_000).toFixed(1).replace('.0', '')}B`;
   if (val >= 1_000_000) return `$${(val / 1_000_000).toFixed(1).replace('.0', '')}M`;
@@ -92,6 +101,15 @@ const formatShortNumber = (val) => {
 };
 
 // Format angka untuk label di atas titik grafik (lebih presisi dari formatShortNumber)
+// Label ringkas di atas batang (tanpa "$", legenda sudah menyebut satuan USD): 1.2M, 850K, 12
+const fmtBarLabel = (val) => {
+  if (val === null || val === undefined || Number.isNaN(val)) return '';
+  if (val >= 999_950_000) return `${(val / 1_000_000_000).toFixed(1).replace(/\.0$/, '')}B`;
+  if (val >= 999_500) return `${(val / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
+  if (val >= 1_000) return `${Math.round(val / 1_000)}K`;
+  return `${Math.round(val)}`;
+};
+
 const formatChartLabel = (val) => {
   if (val === null || val === undefined) return '';
   if (val >= 1_000_000_000) return `$${(val / 1_000_000_000).toFixed(2).replace(/\.?0+$/, '')}B`;
@@ -157,6 +175,14 @@ const formatDateID = (dateStr) => {
 };
 const getOrderStatus = (order) => order.order_status || order.status || order.statusPesanan || order.orderStatus || '';
 const getOrderSupplier = (order) => order.supplier_name || order.supplier || order.namaSupplier || order.vendor || order.nama_supplier || 'Unknown Supplier';
+// Kunci normalisasi nama supplier: abaikan huruf besar/kecil, titik/koma/spasi, dan awalan badan usaha (PT/CV/UD)
+// sehingga "PT Surya Pamenang" dan "PT. SURYA PAMENANG" dianggap supplier yang sama.
+const supplierKey = (name) => String(name || '')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim()
+  .replace(/^(pt|cv|ud)\s+/, '')
+  .replace(/\s+/g, '');
 
 const getYearFromOrder = (order) => {
   const dateStr = getOrderDate(order);
@@ -319,18 +345,38 @@ export default function Analytics({ changePage, onLogout }) {
   const COMPARE_SUPPLIER_COLORS = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#DB2777'];
   const [compareSuppliers, setCompareSuppliers] = usePersistentState('compareSuppliers', []);
   const [compareSupplierSearch, setCompareSupplierSearch] = useState('');
+  // Filter Category Group untuk Compare Supplier ('' = semua kategori)
+  const [compareCategory, setCompareCategory] = usePersistentState('compareCategory', '');
   const [showCompareDropdown, setShowCompareDropdown] = useState(false);
-  const [compareTimeRange, setCompareTimeRange] = usePersistentState('compareTimeRange', 'MAX');
+  // Pilihan rentang waktu Compare Supplier
+  const COMPARE_TIME_RANGES = ['6M', 'YTD', '1Y', '2Y', '3Y', '4Y', '5Y'];
+  const [compareTimeRange, setCompareTimeRange] = usePersistentState('compareTimeRange', 'YTD');
+  // Nilai lama yang tersimpan (mis. 'MAX', '1D', '5D', '1M') tidak tersedia lagi -> kembali ke default
+  useEffect(() => {
+    if (!COMPARE_TIME_RANGES.includes(compareTimeRange)) setCompareTimeRange('YTD');
+  }, [compareTimeRange]);
   const [compareHoverIdx, setCompareHoverIdx] = useState(null); // indeks periode yang sedang di-hover (crosshair grafik compare)
   const compareSearchRef = useRef(null);
   
   const [selectedCategory, setSelectedCategory] = usePersistentState('selectedCategory', null);
-  const [paretoMode, setParetoMode] = usePersistentState('paretoMode', 'supplier'); // 'supplier' | 'po' -> dasar pengelompokan Pareto di Category Breakdown
+  // Supplier yang diklik di grafik Pareto (Supplier Contribution) -> menampilkan detail datanya
+  const [paretoSelectedSupplier, setParetoSelectedSupplier] = useState(null);
+  // Batang yang diklik di grafik Supplier YoY -> menampilkan detail datanya ({ idx, which: 'prev' | 'curr' })
+  const [supBarSelected, setSupBarSelected] = useState(null);
   // Rentang tanggal untuk halaman Category Detail (kosong = ikuti rentang data yang tersedia)
   const [categoryDetailStart, setCategoryDetailStart] = usePersistentState('categoryDetailStart', '');
   const [categoryDetailEnd, setCategoryDetailEnd] = usePersistentState('categoryDetailEnd', '');
+  useEffect(() => { setParetoSelectedSupplier(null); }, [selectedCategory, categoryDetailStart, categoryDetailEnd]);
+  useEffect(() => {
+    if (!paretoSelectedSupplier) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setParetoSelectedSupplier(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paretoSelectedSupplier]);
   // Highlight kartu yang sedang dibuka detailnya (Key Highlights di Supplier Analysis)
-  const [activeHighlight, setActiveHighlight] = useState(null); // 'spend' | 'orders' | 'pending' | 'avgPaid' | null
+  const [activeHighlight, setActiveHighlight] = useState(null); // 'spend' | 'orders' | 'avgPaid' | null
+  const HIGHLIGHT_PAGE_SIZE = 100;
+  const [highlightVisible, setHighlightVisible] = useState(HIGHLIGHT_PAGE_SIZE); // baris yang dirender di modal (sisanya lewat "Show more")
 
   const analyticsTabs = [
     { id: 'overview', label: 'Analytics YoY', icon: 'fa-chart-line' },
@@ -458,7 +504,7 @@ export default function Analytics({ changePage, onLogout }) {
   }, [selectedYear, availableYears]);
 
   const analyticsStats = useMemo(() => {
-    let totalSpend = 0, completedCount = 0, canceledCount = 0, totalOrdersCount = 0;
+    let totalSpend = 0, completedCount = 0, totalOrdersCount = 0;
     orders.forEach((o) => {
       const yr = getYearFromOrder(o);
       if (selectedYear !== 'All' && yr !== parseInt(selectedYear)) return;
@@ -470,12 +516,26 @@ export default function Analytics({ changePage, onLogout }) {
       totalOrdersCount++;
 
       if (status.includes('selesai') || status.includes('paid') || status.includes('lunas') || status.includes('completed')) completedCount++;
-      if (status.includes('batal') || status.includes('cancel')) canceledCount++;
     });
 
     const completionRate = totalOrdersCount > 0 ? Math.round((completedCount / totalOrdersCount) * 100) : 0;
-    return { totalSpend, completionRate, canceledCount, totalOrdersCount };
+    return { totalSpend, completionRate, totalOrdersCount };
   }, [orders, selectedYear]);
+
+  // Key Highlights tab Analytics YoY: total spend & total orders untuk masing-masing dari dua tahun pembanding
+  const yearHighlights = useMemo(() => {
+    const acc = {
+      [comparisonYears.previous]: { spend: 0, orders: 0 },
+      [comparisonYears.current]: { spend: 0, orders: 0 }
+    };
+    orders.forEach((o) => {
+      const yr = getYearFromOrder(o);
+      if (!acc[yr]) return;
+      acc[yr].spend += getOrderTotal(o);
+      acc[yr].orders += 1;
+    });
+    return { prev: acc[comparisonYears.previous], curr: acc[comparisonYears.current] };
+  }, [orders, comparisonYears]);
 
   const yoyChartData = useMemo(() => {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -499,8 +559,28 @@ export default function Analytics({ changePage, onLogout }) {
     return { months, totalsPrev: prevSeries, totalsCurrent: currentSeries, maxVal };
   }, [orders, comparisonYears]);
 
+  // Satu nama tampilan per supplier (nama yang paling sering muncul di data) supaya varian penulisan tidak jadi supplier ganda
+  const supplierCanon = useMemo(() => {
+    const counts = {};
+    orders.forEach((o) => {
+      const n = getOrderSupplier(o);
+      const k = supplierKey(n);
+      if (!counts[k]) counts[k] = {};
+      counts[k][n] = (counts[k][n] || 0) + 1;
+    });
+    const map = {};
+    Object.keys(counts).forEach((k) => {
+      const variants = Object.entries(counts[k]);
+      // paling sering muncul; jika seri, pilih yang bukan HURUF BESAR semua
+      variants.sort((a, b) => (b[1] - a[1]) || ((a[0] === a[0].toUpperCase() ? 1 : 0) - (b[0] === b[0].toUpperCase() ? 1 : 0)));
+      map[k] = variants[0][0];
+    });
+    return map;
+  }, [orders]);
+  const canonSupplier = (o) => { const n = getOrderSupplier(o); return supplierCanon[supplierKey(n)] || n; };
+
   const supplierList = useMemo(() => {
-    const names = orders.map(o => getOrderSupplier(o)).filter(Boolean);
+    const names = orders.map(o => canonSupplier(o)).filter(Boolean);
     return [...new Set(names)].sort();
   }, [orders]);
 
@@ -542,10 +622,29 @@ export default function Analytics({ changePage, onLogout }) {
     setShowSupplierDropdown(false);
   };
 
+  const compareCategoryList = useMemo(() => {
+    return [...new Set(orders.map((o) => getOrderCategory(o)).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  }, [orders]);
+
+  // Kategori tersimpan yang sudah tidak ada di data -> kembali ke semua kategori
+  useEffect(() => {
+    if (compareCategory && compareCategoryList.length > 0 && !compareCategoryList.includes(compareCategory)) setCompareCategory('');
+  }, [compareCategoryList, compareCategory]);
+
+  // Supplier yang punya order di kategori terpilih (untuk pilihan "Add Supplier")
+  const compareCategorySuppliers = useMemo(() => {
+    if (!compareCategory) return null;
+    const set = new Set();
+    orders.forEach((o) => { if (getOrderCategory(o) === compareCategory) set.add(canonSupplier(o)); });
+    return set;
+  }, [orders, compareCategory, supplierCanon]);
+
   const compareSupplierOptions = useMemo(() => {
     const q = compareSupplierSearch.trim().toLowerCase();
-    return supplierList.filter((sup) => !compareSuppliers.includes(sup) && (!q || sup.toLowerCase().includes(q)));
-  }, [supplierList, compareSupplierSearch, compareSuppliers]);
+    return supplierList.filter((sup) => !compareSuppliers.includes(sup)
+      && (!compareCategorySuppliers || compareCategorySuppliers.has(sup))
+      && (!q || sup.toLowerCase().includes(q)));
+  }, [supplierList, compareSupplierSearch, compareSuppliers, compareCategorySuppliers]);
 
   const handleAddCompareSupplier = (sup) => {
     setCompareSuppliers((prev) => (prev.includes(sup) || prev.length >= MAX_COMPARE_SUPPLIERS ? prev : [...prev, sup]));
@@ -566,7 +665,8 @@ export default function Analytics({ changePage, onLogout }) {
       const monthly = new Array(12).fill(0);
 
       orders.forEach((order) => {
-        if (getOrderSupplier(order) !== sup) return;
+        if (canonSupplier(order) !== sup) return;
+        if (compareCategory && getOrderCategory(order) !== compareCategory) return;
         const yr = getYearFromOrder(order);
         if (selectedYear !== 'All' && yr !== parseInt(selectedYear)) return;
 
@@ -596,7 +696,7 @@ export default function Analytics({ changePage, onLogout }) {
     const maxMonthly = Math.max(...rows.flatMap((r) => r.monthly), 1);
 
     return { months, rows, combinedTotal, maxSpend, maxMonthly };
-  }, [orders, compareSuppliers, selectedYear]);
+  }, [orders, compareSuppliers, selectedYear, compareCategory]);
 
   const compareGrowthChart = useMemo(() => {
     const RANGE_DAYS = { '1D': 1, '5D': 5, '1M': 30, '6M': 182, '1Y': 365, '2Y': 365 * 2, '3Y': 365 * 3, '4Y': 365 * 4, '5Y': 365 * 5 };
@@ -609,7 +709,8 @@ export default function Analytics({ changePage, onLogout }) {
     const perSupplier = compareSuppliers.map((sup, idx) => {
       const dayMap = new Map();
       orders.forEach((order) => {
-        if (getOrderSupplier(order) !== sup) return;
+        if (canonSupplier(order) !== sup) return;
+        if (compareCategory && getOrderCategory(order) !== compareCategory) return;
         const yr = getYearFromOrder(order);
         if (selectedYear !== 'All' && yr !== parseInt(selectedYear)) return;
 
@@ -685,8 +786,14 @@ export default function Analytics({ changePage, onLogout }) {
           for (let i = 0; i < rolling.length; i++) { if (rolling[i] > 0) { baseIdx = i; break; } }
         }
         const base = baseIdx >= 0 ? rolling[baseIdx] : 0;
-        const normalized = rolling.map((v, i) => (base > 0 && i >= baseIdx ? ((v - base) / base) * 100 : 0));
-        return { name: s.name, color: s.color, normalized, spend: rolling };
+        // Sebelum baseline: jika belum ada spend sama sekali (0) -> -100% (sama dengan supplier lain yang juga kosong, jadi garis menyatu);
+        // jika sudah ada spend tapi jendela belum penuh -> 0% (titik awal)
+        const normalized = rolling.map((v, i) => {
+          if (!(base > 0)) return 0;
+          if (i >= baseIdx) return ((v - base) / base) * 100;
+          return v > 0 ? 0 : -100;
+        });
+        return { name: s.name, color: s.color, normalized, spend: rolling, hasBase: base > 0 };
       }
 
       // Pengeluaran per periode (harian / bulanan), bukan akumulasi -> ada naik dan turun
@@ -721,6 +828,10 @@ export default function Analytics({ changePage, onLogout }) {
       return { name: s.name, color: s.color, normalized, spend };
     });
 
+    // Supplier tanpa data sama sekali di rentang ini: jika supplier lain punya data, posisinya = kosong (-100%)
+    if (isYearMode && rows.some((r) => r.hasBase)) {
+      rows.forEach((r) => { if (!r.hasBase) r.normalized = r.normalized.map(() => -100); });
+    }
     const allNormalized = rows.flatMap((r) => r.normalized);
     const rawMax = allNormalized.length ? Math.max(...allNormalized) : 10;
     const rawMin = allNormalized.length ? Math.min(...allNormalized) : -10;
@@ -759,7 +870,7 @@ export default function Analytics({ changePage, onLogout }) {
     }
 
     return { rows, labels, minNormalized, maxNormalized, mode: isYearMode ? 'year' : 'default', ticks, yTicks };
-  }, [orders, compareSuppliers, selectedYear, compareTimeRange]);
+  }, [orders, compareSuppliers, selectedYear, compareTimeRange, compareCategory]);
 
   const supplierAnalysisData = useMemo(() => {
     const totalsPrev = new Array(12).fill(0);
@@ -768,7 +879,7 @@ export default function Analytics({ changePage, onLogout }) {
 
     if (selectedSupplier) {
       orders.forEach((order) => {
-        if (getOrderSupplier(order) === selectedSupplier) {
+        if (canonSupplier(order) === selectedSupplier) {
           const yr = getYearFromOrder(order);
           const costUSD = getOrderTotal(order);
           const monthIdx = getOrderDate(order) ? new Date(getOrderDate(order)).getMonth() : 0;
@@ -813,6 +924,20 @@ export default function Analytics({ changePage, onLogout }) {
     };
   }, [orders, selectedSupplier, comparisonYears]);
 
+  useEffect(() => { setSupBarSelected(null); }, [selectedSupplier, comparisonYears.previous, comparisonYears.current]);
+
+  // Layout batang Supplier YoY (dipakai oleh batang, label angka, dan penempatan label % YoY agar tidak tabrakan)
+  const SUP_X0 = 95, SUP_STEP = 820 / 11, SUP_BAR_W = 28, SUP_GAP = 2;
+  const getSupplierBarLayout = (idx) => {
+    const d = supplierAnalysisData;
+    const toH = (v) => { const h = (v / d.maxSpend) * 200; return isNaN(h) ? 0 : h; };
+    const xCenter = SUP_X0 + idx * SUP_STEP;
+    const hPrev = toH(d.totalsPrev[idx]), hCurr = toH(d.totalsCurrent[idx]);
+    const yPrev = 230 - hPrev, yCurr = 230 - hCurr;
+    const xPrev = xCenter - SUP_BAR_W - SUP_GAP / 2, xCurr = xCenter + SUP_GAP / 2;
+    return { xCenter, hPrev, hCurr, yPrev, yCurr, xPrev, xCurr, barWidth: SUP_BAR_W };
+  };
+
   const avgCategoryData = useMemo(() => {
     const catMap = {};
     orders.forEach((order) => {
@@ -848,70 +973,44 @@ export default function Analytics({ changePage, onLogout }) {
     });
   }, [orders, selectedCategory, selectedYear]);
 
-  // Pareto 80/20 untuk kategori terpilih: dikelompokkan per Supplier atau per PO, diurutkan dari spend terbesar
-  const categoryParetoData = useMemo(() => {
-    if (!selectedCategory) return { rows: [], total: 0, vitalCount: 0, totalPOs: 0 };
-    const map = {};
-    const allPOs = new Set();
-    categoryBreakdownData.forEach((o) => {
-      const poKey = o.poNumber || `row-${o.id}`;
-      const key = paretoMode === 'po' ? poKey : getOrderSupplier(o);
-      allPOs.add(poKey);
-      if (!map[key]) map[key] = { name: key, spend: 0, poSet: new Set(), supplier: getOrderSupplier(o) };
-      map[key].spend += getOrderTotal(o);
-      map[key].poSet.add(poKey);
-    });
-    const sorted = Object.values(map)
-      .filter((r) => r.spend > 0)
-      .sort((a, b) => b.spend - a.spend);
-    const total = sorted.reduce((sum, r) => sum + r.spend, 0);
-    let running = 0;
-    const rows = sorted.map((r) => {
-      running += r.spend;
-      return {
-        name: r.name,
-        supplier: r.supplier,
-        poCount: r.poSet.size,
-        spend: r.spend,
-        share: total > 0 ? (r.spend / total) * 100 : 0,
-        cumPct: total > 0 ? (running / total) * 100 : 0
-      };
-    });
-    const idx80 = rows.findIndex((r) => r.cumPct >= 80);
-    const vitalCount = rows.length === 0 ? 0 : (idx80 === -1 ? rows.length : idx80 + 1);
-    return { rows, total, vitalCount, totalPOs: allPOs.size };
-  }, [categoryBreakdownData, selectedCategory, paretoMode]);
+  // Filter Category Detail sekarang hanya BULAN & TAHUN (format 'YYYY-MM'), tanpa tanggal.
+  // toMonth juga menormalkan nilai lama 'YYYY-MM-DD' yang mungkin masih tersimpan.
+  const toMonth = (v) => (v ? String(v).slice(0, 7) : '');
 
-  // Rentang tanggal yang tersedia untuk kategori terpilih (dipakai sebagai default date-range picker)
+  // Rentang bulan yang tersedia untuk kategori terpilih (dipakai sebagai default month-range picker)
   const categoryDetailDateBounds = useMemo(() => {
     if (!selectedCategory) return { min: '', max: '' };
-    const dates = orders
+    const months = orders
       .filter((o) => getOrderCategory(o) === selectedCategory)
-      .map((o) => o.date)
+      .map((o) => toMonth(o.date))
       .filter((d) => d && d !== '-')
       .sort();
-    return { min: dates[0] || '', max: dates[dates.length - 1] || '' };
+    return { min: months[0] || '', max: months[months.length - 1] || '' };
   }, [orders, selectedCategory]);
 
-  const effectiveDetailStart = categoryDetailStart || categoryDetailDateBounds.min;
-  const effectiveDetailEnd = categoryDetailEnd || categoryDetailDateBounds.max;
+  const effectiveDetailStart = toMonth(categoryDetailStart) || categoryDetailDateBounds.min; // 'YYYY-MM'
+  const effectiveDetailEnd = toMonth(categoryDetailEnd) || categoryDetailDateBounds.max;     // 'YYYY-MM'
 
   // Data lengkap untuk halaman "Category Detail" (pict 1): stat cards, trend bulanan, breakdown subkategori,
   // top suppliers, dan transaksi terbaru — semuanya difilter oleh kategori terpilih + rentang tanggal di atas.
   const categoryDetail = useMemo(() => {
     if (!selectedCategory || !effectiveDetailStart || !effectiveDetailEnd) return null;
 
-    const inRange = (o, s, e) => o.date && o.date !== '-' && o.date >= s && o.date <= e;
+    // Filter per bulan: bandingkan 'YYYY-MM' dari tanggal transaksi (urutan teks = urutan waktu)
+    const inRange = (o, s, e) => {
+      const m = toMonth(o.date);
+      return m && o.date !== '-' && m >= s && m <= e;
+    };
     const currentOrders = orders.filter((o) => getOrderCategory(o) === selectedCategory && inRange(o, effectiveDetailStart, effectiveDetailEnd));
 
-    // Periode sebelumnya: durasi sama persis, langsung sebelum tanggal mulai (untuk % perubahan di stat card)
-    const startMs = new Date(effectiveDetailStart).getTime();
-    const endMs = new Date(effectiveDetailEnd).getTime();
-    const durationMs = Math.max(endMs - startMs, 0);
-    const prevEndDate = new Date(startMs - 24 * 60 * 60 * 1000);
-    const prevStartDate = new Date(prevEndDate.getTime() - durationMs);
-    const toISO = (d) => d.toISOString().split('T')[0];
-    const prevOrders = orders.filter((o) => getOrderCategory(o) === selectedCategory && inRange(o, toISO(prevStartDate), toISO(prevEndDate)));
+    // Periode sebelumnya: jumlah bulan sama persis, langsung sebelum bulan mulai (untuk % perubahan di stat card)
+    const [sy, sm] = effectiveDetailStart.split('-').map(Number);
+    const [ey, em] = effectiveDetailEnd.split('-').map(Number);
+    const monthSpan = Math.max((ey - sy) * 12 + (em - sm) + 1, 1);
+    const toYM = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const prevStartYM = toYM(new Date(sy, sm - 1 - monthSpan, 1));
+    const prevEndYM = toYM(new Date(sy, sm - 2, 1));
+    const prevOrders = orders.filter((o) => getOrderCategory(o) === selectedCategory && inRange(o, prevStartYM, prevEndYM));
 
     const sumSpend = (list) => list.reduce((s, o) => s + getOrderTotal(o), 0);
     const totalSpend = sumSpend(currentOrders);
@@ -928,14 +1027,14 @@ export default function Analytics({ changePage, onLogout }) {
     const yearsInRange = Array.from(new Set(currentOrders.map((o) => getYearFromOrder(o)))).filter(Boolean).sort((a, b) => a - b);
     const yearPrevT = yearsInRange.length > 1 ? yearsInRange[yearsInRange.length - 2] : null;
     const yearCurrT = yearsInRange[yearsInRange.length - 1] || null;
-    const monthly = Array.from({ length: 12 }, () => ({ prev: 0, curr: 0 }));
+    const monthly = Array.from({ length: 12 }, () => ({ prev: 0, curr: 0, prevN: 0, currN: 0 }));
     currentOrders.forEach((o) => {
       const yr = getYearFromOrder(o);
       const d = new Date(o.date);
       if (Number.isNaN(d.getTime())) return;
       const m = d.getMonth();
-      if (yr === yearPrevT) monthly[m].prev += getOrderTotal(o);
-      if (yr === yearCurrT) monthly[m].curr += getOrderTotal(o);
+      if (yr === yearPrevT) { monthly[m].prev += getOrderTotal(o); monthly[m].prevN += 1; }
+      if (yr === yearCurrT) { monthly[m].curr += getOrderTotal(o); monthly[m].currN += 1; }
     });
 
     // Breakdown subkategori (Category Contribution)
@@ -952,15 +1051,35 @@ export default function Analytics({ changePage, onLogout }) {
     // Top Suppliers
     const supMap = {};
     currentOrders.forEach((o) => {
-      const sup = getOrderSupplier(o);
-      if (!supMap[sup]) supMap[sup] = { name: sup, spend: 0, count: 0 };
+      const sup = canonSupplier(o);
+      if (!supMap[sup]) supMap[sup] = { name: sup, spend: 0, count: 0, orders: [] };
       supMap[sup].spend += getOrderTotal(o);
       supMap[sup].count += 1;
+      supMap[sup].orders.push(o);
     });
     const topSuppliers = Object.values(supMap)
       .map((s) => ({ ...s, avg: s.count > 0 ? s.spend / s.count : 0 }))
       .sort((a, b) => b.spend - a.spend)
       .slice(0, 5);
+
+    // Pareto 80/20 per Supplier (ikut filter bulan): urut dari spend terbesar + persentase kumulatif
+    const paretoSorted = Object.values(supMap).filter((r) => r.spend > 0).sort((a, b) => b.spend - a.spend);
+    const paretoTotal = paretoSorted.reduce((sum, r) => sum + r.spend, 0);
+    let paretoRunning = 0;
+    const paretoRows = paretoSorted.map((r) => {
+      paretoRunning += r.spend;
+      return {
+        name: r.name,
+        spend: r.spend,
+        count: r.count,
+        avg: r.count > 0 ? r.spend / r.count : 0,
+        orders: [...r.orders].sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))),
+        share: paretoTotal > 0 ? (r.spend / paretoTotal) * 100 : 0,
+        cumPct: paretoTotal > 0 ? (paretoRunning / paretoTotal) * 100 : 0
+      };
+    });
+    const pareto80Idx = paretoRows.findIndex((r) => r.cumPct >= 80);
+    const paretoVitalCount = paretoRows.length === 0 ? 0 : (pareto80Idx === -1 ? paretoRows.length : pareto80Idx + 1);
 
     // Recent Transactions
     const recentTransactions = [...currentOrders]
@@ -973,66 +1092,56 @@ export default function Analytics({ changePage, onLogout }) {
       poChange: pctChange(totalPO, prevPO),
       avgChange: pctChange(avgPO, prevAvg),
       monthly, yearPrevT, yearCurrT,
-      subRows, topSuppliers, recentTransactions
+      subRows, topSuppliers, recentTransactions,
+      pareto: { rows: paretoRows, total: paretoTotal, vitalCount: paretoVitalCount }
     };
   }, [orders, selectedCategory, effectiveDetailStart, effectiveDetailEnd]);
 
-  // Key Highlights di Supplier Analysis: ikut filter tahun, dan ikut supplier yang dipilih (kalau belum dipilih = semua supplier)
-  const supplierHighlights = useMemo(() => {
-    let totalSpend = 0, paidSpend = 0, totalOrders = 0;
+  // Data dasar Key Highlights: ikut filter tahun & supplier. Nilai USD, status paid, dan tanggal dihitung SEKALI di sini
+  // (saat filter berubah) — bukan saat kartu diklik — supaya modal bisa terbuka instan.
+  const highlightBase = useMemo(() => {
+    const rows = [];
     orders.forEach((o) => {
       const yr = getYearFromOrder(o);
       if (selectedYear !== 'All' && yr !== parseInt(selectedYear, 10)) return;
-      if (selectedSupplier && getOrderSupplier(o) !== selectedSupplier) return;
-      const cost = getOrderTotal(o);
+      if (selectedSupplier && canonSupplier(o) !== selectedSupplier) return;
       const status = getOrderStatus(o).toLowerCase();
-      totalSpend += cost;
-      totalOrders++;
-      if (status.includes('paid') || status.includes('lunas')) paidSpend += cost;
+      rows.push({
+        o,
+        total: getOrderTotal(o),
+        paid: status.includes('paid') || status.includes('lunas'),
+        d: String(o.date || '')
+      });
+    });
+    return rows;
+  }, [orders, selectedYear, selectedSupplier]);
+
+  // Angka di kartu Key Highlights (hanya menjumlah data dasar, tanpa parsing ulang)
+  const supplierHighlights = useMemo(() => {
+    let totalSpend = 0, paidSpend = 0;
+    highlightBase.forEach((r) => {
+      totalSpend += r.total;
+      if (r.paid) paidSpend += r.total;
     });
     return {
       totalSpend,
-      totalOrders,
-      pendingPayment: Math.max(totalSpend - paidSpend, 0),
+      totalOrders: highlightBase.length,
       avgPaidPct: totalSpend > 0 ? Math.round((paidSpend / totalSpend) * 100) : 0
     };
-  }, [orders, selectedYear, selectedSupplier]);
+  }, [highlightBase]);
 
-  // Baris order di balik kartu Key Highlights yang sedang diklik, mengikuti filter tahun & supplier yang sama
+  // Baris di balik kartu yang diklik: hanya mengurutkan data dasar yang sudah siap (tanpa filter/parsing ulang)
   const highlightModalData = useMemo(() => {
     if (!activeHighlight) return null;
-    const base = orders.filter((o) => {
-      const yr = getYearFromOrder(o);
-      if (selectedYear !== 'All' && yr !== parseInt(selectedYear, 10)) return false;
-      if (selectedSupplier && getOrderSupplier(o) !== selectedSupplier) return false;
-      return true;
-    });
-    const isPaid = (o) => {
-      const status = getOrderStatus(o).toLowerCase();
-      return status.includes('paid') || status.includes('lunas');
-    };
-    const configs = {
-      spend: {
-        title: 'Total Spend',
-        rows: [...base].sort((a, b) => getOrderTotal(b) - getOrderTotal(a)),
-      },
-      orders: {
-        title: 'Total Orders',
-        rows: [...base].sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))),
-      },
-      pending: {
-        title: 'Pending Payment',
-        rows: [...base].filter((o) => !isPaid(o)).sort((a, b) => getOrderTotal(b) - getOrderTotal(a)),
-      },
-      avgPaid: {
-        title: 'Average % Paid',
-        rows: [...base].sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))),
-      },
-    };
-    const cfg = configs[activeHighlight];
-    const totalSpendOfRows = cfg.rows.reduce((s, o) => s + getOrderTotal(o), 0);
-    return { ...cfg, count: cfg.rows.length, totalSpendOfRows, isPaid };
-  }, [activeHighlight, orders, selectedYear, selectedSupplier]);
+    const byTotal = (a, b) => b.total - a.total;
+    const byDate = (a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : 0); // format 'YYYY-MM-DD' -> cukup bandingkan teks
+    const titles = { spend: 'Total Spend', orders: 'Total Orders', avgPaid: 'Average % Paid' };
+    let rows;
+    if (activeHighlight === 'spend') rows = [...highlightBase].sort(byTotal);
+    else rows = [...highlightBase].sort(byDate); // 'orders' & 'avgPaid'
+    const totalSpendOfRows = rows.reduce((sum, r) => sum + r.total, 0);
+    return { title: titles[activeHighlight], rows, count: rows.length, totalSpendOfRows };
+  }, [activeHighlight, highlightBase]);
 
   return (
     <>
@@ -1078,8 +1187,9 @@ export default function Analytics({ changePage, onLogout }) {
 
           {/* OVERVIEW & TREND */}
           {activeTab === 'overview' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 sm:grid-cols-4 lg:grid-cols-4 gap-5">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6 items-start">
+            <div className="space-y-6 min-w-0">
+              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-3 gap-5">
                 {/* YEAR FILTER BOX */}
                 <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <label className={`block text-xs font-semibold uppercase tracking-wider mb-3 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Year Filter</label>
@@ -1107,7 +1217,7 @@ export default function Analytics({ changePage, onLogout }) {
                   <div className="flex items-center justify-between mb-2">
                      <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Spend (USD)</p>
                   </div>
-                  <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(analyticsStats.totalSpend)}</p>
+                  <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatSpend(analyticsStats.totalSpend)}</p>
                 </div>
 
                 <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
@@ -1115,14 +1225,6 @@ export default function Analytics({ changePage, onLogout }) {
                   <div className="flex items-baseline gap-2">
                     <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{analyticsStats.completionRate}%</p>
                     <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>Completed Status</span>
-                  </div>
-                </div>
-
-                <div className={`p-5 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total Canceled POs</p>
-                  <div className="flex items-baseline gap-2">
-                    <p className={`text-2xl font-black ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{analyticsStats.canceledCount}</p>
-                    <span className={`text-xs font-medium ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{selectedYear === 'All' ? 'All Time' : selectedYear}</span>
                   </div>
                 </div>
               </div>
@@ -1186,6 +1288,39 @@ export default function Analytics({ changePage, onLogout }) {
                 </div>
               </div>
             </div>
+            {/* KEY HIGHLIGHTS (di sebelah kanan grafik) */}
+            <div className={`p-6 rounded-2xl border shadow-xs ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+              <h3 className={`font-bold text-base mb-5 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                Key Highlights ({comparisonYears.previous} vs {comparisonYears.current})
+              </h3>
+              <div>
+                {[
+                  { label: 'Total Spend', fmt: (v) => formatSpend(v.spend), icon: <span className="text-lg font-bold">$</span>, bg: 'bg-red-600' },
+                  { label: 'Total Orders', fmt: (v) => v.orders.toLocaleString(), icon: <i className="fa-solid fa-file-lines text-base"></i>, bg: 'bg-blue-600' },
+                ].map((item, idx, arr) => (
+                  <div
+                    key={item.label}
+                    className={`flex items-center gap-3 py-4 ${idx !== arr.length - 1 ? `border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-100'}` : ''}`}
+                  >
+                    <div className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-white ${item.bg}`}>
+                      {item.icon}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs mb-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{item.label}</p>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="text-[10px] font-semibold text-red-500">{comparisonYears.current}</span>
+                        <span className={`text-base font-bold truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{item.fmt(yearHighlights.curr)}</span>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className={`text-[10px] font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{comparisonYears.previous}</span>
+                        <span className={`text-sm font-semibold truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>{item.fmt(yearHighlights.prev)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
           )}
 
           {/* SUPPLIER ANALYSIS */}
@@ -1252,11 +1387,11 @@ export default function Analytics({ changePage, onLogout }) {
                </div>
                <div className={`p-5 rounded-xl border shadow-sm ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-800' : 'bg-gray-50/50 border-gray-100'}`}>
                   <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>{comparisonYears.current} TOTAL (USD)</p>
-                  <p className="text-lg font-black text-red-500">{formatUSD(supplierAnalysisData.totalYearCurrent)}</p>
+                  <p className="text-lg font-black text-red-500">{formatSpend(supplierAnalysisData.totalYearCurrent)}</p>
                </div>
                <div className={`p-5 rounded-xl border shadow-sm ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-800' : 'bg-gray-50/50 border-gray-100'}`}>
                   <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>{comparisonYears.previous} TOTAL (USD)</p>
-                  <p className={`text-lg font-black ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{formatUSD(supplierAnalysisData.totalYearPrev)}</p>
+                  <p className={`text-lg font-black ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{formatSpend(supplierAnalysisData.totalYearPrev)}</p>
                </div>
                <div className={`p-5 rounded-xl border shadow-sm ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-800' : 'bg-gray-50/50 border-gray-100'}`}>
                   <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`}>YoY CHANGE</p>
@@ -1293,13 +1428,13 @@ export default function Analytics({ changePage, onLogout }) {
                   </div>
                </div>
 
-               <div className="w-full h-72 relative mt-4">
+               <div className="w-full aspect-[1000/270] relative mt-4">
                   {!selectedSupplier && (
                      <div className={`absolute inset-0 z-10 flex items-center justify-center text-sm pointer-events-none ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
                         Search and select a supplier to see the YoY comparison
                      </div>
                   )}
-                  <svg viewBox="0 0 1000 280" className="w-full h-full overflow-visible font-sans">
+                  <svg viewBox="0 0 1000 270" className="w-full h-full overflow-visible font-sans" onClick={() => setSupBarSelected(null)}>
                      <defs>
                         <linearGradient id="barPrev" x1="0" y1="0" x2="0" y2="1">
                            <stop offset="0%" stopColor={isDarkMode ? '#94A3B8' : '#9CA3AF'} stopOpacity="1"/>
@@ -1317,23 +1452,25 @@ export default function Analytics({ changePage, onLogout }) {
                         const isZeroLine = pct === 0;
                         return (
                            <g key={`grid-${i}`}>
-                              <line x1="60" y1={y} x2="940" y2={y} stroke={isZeroLine ? (isDarkMode ? '#64748B' : '#9CA3AF') : (isDarkMode ? '#334155' : '#E5E7EB')} strokeDasharray={isZeroLine ? "0" : "4 4"} strokeWidth={isZeroLine ? "2" : "1"} />
+                              <line x1="60" y1={y} x2="950" y2={y} stroke={isZeroLine ? (isDarkMode ? '#64748B' : '#9CA3AF') : (isDarkMode ? '#334155' : '#E5E7EB')} strokeDasharray={isZeroLine ? "0" : "4 4"} strokeWidth={isZeroLine ? "2" : "1"} />
                               <text x="50" y={y + 4} textAnchor="end" className={`text-[10px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>{formatShortNumber(val)}</text>
                            </g>
                         );
                      })}
 
                      {supplierAnalysisData.months.map((m, idx) => {
-                        const xCenter = 60 + (idx * (880 / 11));
-                        const hPrev = isNaN((supplierAnalysisData.totalsPrev[idx] / supplierAnalysisData.maxSpend) * 200) ? 0 : (supplierAnalysisData.totalsPrev[idx] / supplierAnalysisData.maxSpend) * 200;
-                        const hCurr = isNaN((supplierAnalysisData.totalsCurrent[idx] / supplierAnalysisData.maxSpend) * 200) ? 0 : (supplierAnalysisData.totalsCurrent[idx] / supplierAnalysisData.maxSpend) * 200;
-                        const yPrev = 230 - hPrev, yCurr = 230 - hCurr, barWidth = 20, gap = 4;
-                        let xPrev = xCenter - barWidth - (gap / 2), xCurr = xCenter + (gap / 2);
+                        const { xCenter, hPrev, hCurr, yPrev, yCurr, xPrev, xCurr, barWidth } = getSupplierBarLayout(idx);
+                        const selPrev = supBarSelected && supBarSelected.idx === idx && supBarSelected.which === 'prev';
+                        const selCurr = supBarSelected && supBarSelected.idx === idx && supBarSelected.which === 'curr';
 
                         return (
                            <g key={`bars-${idx}`}>
-                              {hPrev > 0 && <path d={generateRoundedBar(xPrev, yPrev, barWidth, hPrev, 4)} fill="url(#barPrev)" />}
-                              {hCurr > 0 && <path d={generateRoundedBar(xCurr, yCurr, barWidth, hCurr, 4)} fill="url(#barCurr)" />}
+                              {hPrev > 0 && (
+                                 <path d={generateRoundedBar(xPrev, yPrev, barWidth, hPrev, 4)} fill="url(#barPrev)" stroke={selPrev ? (isDarkMode ? '#F1F5F9' : '#111827') : 'none'} strokeWidth="2" opacity={supBarSelected && !selPrev ? 0.6 : 1} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSupBarSelected(selPrev ? null : { idx, which: 'prev' }); }} />
+                              )}
+                              {hCurr > 0 && (
+                                 <path d={generateRoundedBar(xCurr, yCurr, barWidth, hCurr, 4)} fill="url(#barCurr)" stroke={selCurr ? (isDarkMode ? '#F1F5F9' : '#111827') : 'none'} strokeWidth="2" opacity={supBarSelected && !selCurr ? 0.6 : 1} style={{ cursor: 'pointer' }} onClick={(e) => { e.stopPropagation(); setSupBarSelected(selCurr ? null : { idx, which: 'curr' }); }} />
+                              )}
                               <text x={xCenter} y="250" textAnchor="middle" className={`text-[11px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}>{m}</text>
                            </g>
                         );
@@ -1347,28 +1484,80 @@ export default function Analytics({ changePage, onLogout }) {
                         const rawMax = Math.max(...valid, 0);
                         const rawMin = Math.min(...valid, 0);
                         const span = (rawMax - rawMin) || 1;
-                        const yTop = 45, yBottom = 215;
+                        // Garis % YoY digambar menyatu di area grafik yang sama dengan batang (combo chart), skala % di sumbu kanan
+                        const yTop = 50, yBottom = 210;
                         const yOf = (v) => yBottom - ((v - rawMin) / span) * (yBottom - yTop);
                         const fmtPct = (v) => {
                            const sign = v > 0 ? '+' : '';
                            return Math.abs(v) >= 1000 ? `${sign}${(v / 1000).toFixed(1)}k%` : `${sign}${v.toFixed(0)}%`;
                         };
-                        const pts = vals.map((v, idx) => (v === null ? null : { x: 60 + idx * (880 / 11), y: yOf(v), v }));
+                        const boxes = [];
+                        const hit = (a, b) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2 && a.y2 > b.y1;
+                        const base = vals.map((v, idx) => (v === null ? null : { x: SUP_X0 + idx * SUP_STEP, y: yOf(v), v }));
+                        // titik (lingkaran) juga dianggap penghalang
+                        base.forEach((pt) => { if (pt) boxes.push({ x1: pt.x - 6, x2: pt.x + 6, y1: pt.y - 6, y2: pt.y + 6 }); });
+                        // coba beberapa posisi (atas/bawah/lebih jauh) sampai menemukan yang tidak menabrak
+                        const offsets = [-10, 19, -24, 33, -38, 47, -52, 61];
+                        const pts = base.map((pt) => {
+                           if (!pt) return null;
+                           const w = fmtPct(pt.v).length * 6.2 + 4;
+                           let chosen = offsets[0];
+                           for (const off of offsets) {
+                              const cy = pt.y + off;
+                              const b = { x1: pt.x - w / 2, x2: pt.x + w / 2, y1: cy - 9, y2: cy + 2 };
+                              if (cy - 9 < 2 || cy > 262) continue;
+                              if (!boxes.some((o) => hit(b, o))) { chosen = off; break; }
+                           }
+                           const cy = pt.y + chosen;
+                           boxes.push({ x1: pt.x - w / 2, x2: pt.x + w / 2, y1: cy - 9, y2: cy + 2 });
+                           return { ...pt, labelY: cy };
+                        });
                         const d = generateMonotoneSvgPath(pts);
                         const zeroY = yOf(0);
                         return (
                            <g>
-                              <line x1="60" y1={zeroY} x2="940" y2={zeroY} stroke="#F59E0B" strokeOpacity="0.5" strokeDasharray="3 3" strokeWidth="1" />
-                              <text x="948" y={zeroY + 3} textAnchor="start" className="text-[10px] fill-amber-500">0%</text>
-                              {rawMax > 0 && <text x="948" y={yOf(rawMax) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMax)}</text>}
-                              {rawMin < 0 && <text x="948" y={yOf(rawMin) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMin)}</text>}
+                              <line x1="60" y1={zeroY} x2="950" y2={zeroY} stroke="#F59E0B" strokeOpacity="0.5" strokeDasharray="3 3" strokeWidth="1" />
+                              <text x="958" y={zeroY + 3} textAnchor="start" className="text-[10px] fill-amber-500">0%</text>
+                              {rawMax > 0 && Math.abs(yOf(rawMax) - zeroY) >= 11 && <text x="958" y={yOf(rawMax) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMax)}</text>}
+                              {rawMin < 0 && Math.abs(yOf(rawMin) - zeroY) >= 11 && <text x="958" y={yOf(rawMin) + 3} textAnchor="start" className="text-[10px] fill-amber-500">{fmtPct(rawMin)}</text>}
                               {d && <path d={d} fill="none" stroke="#F59E0B" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'drop-shadow(0px 3px 4px rgba(245, 158, 11, 0.25))' }} />}
                               {pts.map((pt, idx) => pt && (
                                  <g key={`yoy-${idx}`}>
                                     <circle cx={pt.x} cy={pt.y} r="4.5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke="#F59E0B" strokeWidth="2" />
-                                    <text x={pt.x} y={pt.y - 10} textAnchor="middle" className={`text-[10px] font-semibold ${pt.v >= 0 ? 'fill-emerald-500' : 'fill-red-500'}`}>{fmtPct(pt.v)}</text>
+                                    <text x={pt.x} y={pt.labelY} textAnchor="middle" stroke={isDarkMode ? '#1E293B' : '#FFFFFF'} strokeWidth="3" strokeLinejoin="round" style={{ paintOrder: 'stroke' }} className={`text-[10px] font-semibold ${pt.v >= 0 ? 'fill-emerald-500' : 'fill-red-500'}`}>{fmtPct(pt.v)}</text>
                                  </g>
                               ))}
+                           </g>
+                        );
+                     })()}
+                     {/* Detail data batang yang diklik */}
+                     {supBarSelected && (() => {
+                        const { idx, which } = supBarSelected;
+                        const L = getSupplierBarLayout(idx);
+                        const isCurr = which === 'curr';
+                        const year = isCurr ? comparisonYears.current : comparisonYears.previous;
+                        const val = (isCurr ? supplierAnalysisData.totalsCurrent : supplierAnalysisData.totalsPrev)[idx];
+                        const otherYear = isCurr ? comparisonYears.previous : comparisonYears.current;
+                        const otherVal = (isCurr ? supplierAnalysisData.totalsPrev : supplierAnalysisData.totalsCurrent)[idx];
+                        const yoy = supplierAnalysisData.monthlyYoy[idx];
+                        const w = 168, h = yoy !== null && yoy !== undefined ? 76 : 60;
+                        const barX = (isCurr ? L.xCurr : L.xPrev) + L.barWidth / 2;
+                        const barTop = isCurr ? L.yCurr : L.yPrev;
+                        const x = Math.min(Math.max(barX - w / 2, 4), 996 - w);
+                        const y = barTop - h - 8 >= 2 ? barTop - h - 8 : Math.min(barTop + 8, 232 - h);
+                        const bg = isDarkMode ? '#0F172A' : '#FFFFFF';
+                        const border = isDarkMode ? '#475569' : '#D1D5DB';
+                        const tMain = isDarkMode ? 'fill-slate-100' : 'fill-gray-900';
+                        const tSub = isDarkMode ? 'fill-slate-400' : 'fill-gray-500';
+                        return (
+                           <g style={{ pointerEvents: 'none' }}>
+                              <rect x={x} y={y} width={w} height={h} rx="8" fill={bg} stroke={border} strokeWidth="1" style={{ filter: 'drop-shadow(0px 4px 8px rgba(0,0,0,0.18))' }} />
+                              <text x={x + 10} y={y + 17} className={`text-[11px] font-bold ${isCurr ? 'fill-red-500' : tSub}`}>{supplierAnalysisData.months[idx]} {year}</text>
+                              <text x={x + 10} y={y + 36} className={`text-[15px] font-black ${tMain}`}>{formatSpend(val)}</text>
+                              <text x={x + 10} y={y + 52} className={`text-[10px] ${tSub}`}>{otherYear}: {formatSpend(otherVal)}</text>
+                              {yoy !== null && yoy !== undefined && (
+                                 <text x={x + 10} y={y + 68} className={`text-[10px] font-semibold ${yoy >= 0 ? 'fill-emerald-500' : 'fill-red-500'}`}>YoY {yoy > 0 ? '+' : ''}{yoy.toFixed(1)}%</text>
+                              )}
                            </g>
                         );
                      })()}
@@ -1384,16 +1573,15 @@ export default function Analytics({ changePage, onLogout }) {
             </h3>
             <div>
               {[
-                { key: 'spend', label: 'Total Spend', value: formatUSD(supplierHighlights.totalSpend), icon: <span className="text-lg font-bold">$</span>, bg: 'bg-red-600' },
+                { key: 'spend', label: 'Total Spend', value: formatSpend(supplierHighlights.totalSpend), icon: <span className="text-lg font-bold">$</span>, bg: 'bg-red-600' },
                 { key: 'orders', label: 'Total Orders', value: supplierHighlights.totalOrders.toLocaleString(), icon: <i className="fa-solid fa-file-lines text-base"></i>, bg: 'bg-blue-600' },
-                { key: 'pending', label: 'Pending Payment', value: formatUSD(supplierHighlights.pendingPayment), icon: <i className="fa-solid fa-wallet text-base"></i>, bg: 'bg-red-600' },
-                { key: 'avgPaid', label: 'Average % Paid', value: `${supplierHighlights.avgPaidPct}%`, icon: <i className="fa-solid fa-chart-pie text-base"></i>, bg: 'bg-blue-600' },
               ].map((item, idx, arr) => (
                 <button
                   type="button"
                   key={item.label}
-                  onClick={() => setActiveHighlight(item.key)}
-                  className={`w-full text-left flex items-center gap-3 py-4 cursor-pointer transition-colors rounded-lg px-2 -mx-2 ${isDarkMode ? 'hover:bg-slate-800/60' : 'hover:bg-gray-50'} ${idx !== arr.length - 1 ? `border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-100'}` : ''} ${idx === 0 ? 'pt-0' : ''}`}
+                  disabled={item.key !== 'orders'}
+                  onClick={() => { if (item.key !== 'orders') return; setHighlightVisible(HIGHLIGHT_PAGE_SIZE); setActiveHighlight(item.key); }}
+                  className={`w-full text-left flex items-center gap-3 py-4 transition-colors rounded-lg px-2 -mx-2 ${item.key === 'orders' ? `cursor-pointer ${isDarkMode ? 'hover:bg-slate-800/60' : 'hover:bg-gray-50'}` : 'cursor-default'} ${idx !== arr.length - 1 ? `border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-100'}` : ''} ${idx === 0 ? 'pt-0' : ''}`}
                 >
                   <div className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-white ${item.bg}`}>
                     {item.icon}
@@ -1404,7 +1592,7 @@ export default function Analytics({ changePage, onLogout }) {
                   </div>
                   <div className="text-right shrink-0 flex items-center gap-2">
                     <p className={`text-[10px] ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{selectedYear === 'All' ? 'All Time' : selectedYear}</p>
-                    <i className={`fa-solid fa-chevron-right text-[10px] ${isDarkMode ? 'text-slate-600' : 'text-gray-300'}`}></i>
+                    {item.key === 'orders' && <i className={`fa-solid fa-chevron-right text-[10px] ${isDarkMode ? 'text-slate-600' : 'text-gray-300'}`}></i>}
                   </div>
                 </button>
               ))}
@@ -1427,7 +1615,13 @@ export default function Analytics({ changePage, onLogout }) {
                   <div className="flex items-center justify-between mb-4">
                     <div>
                       <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Average PO Value by Category (USD)</h3>
-                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Click on any category to view its Pareto analysis</p>
+                      <p className={`text-xs mt-1 flex flex-wrap items-center gap-1.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>
+                        <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md font-bold ${isDarkMode ? 'bg-red-500/15 text-red-400' : 'bg-red-50 text-red-600'}`}>
+                          <i className="fa-solid fa-hand-pointer text-[10px]"></i>
+                          Click on
+                        </span>
+                        <span>any category to view its Pareto analysis</span>
+                      </p>
                     </div>
                   </div>
 
@@ -1489,17 +1683,19 @@ export default function Analytics({ changePage, onLogout }) {
                     <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${isDarkMode ? 'border-slate-700 bg-[#0F172A] text-slate-300' : 'border-gray-200 bg-white text-gray-600'}`}>
                       <i className="fa-regular fa-calendar"></i>
                       <input
-                        type="date"
+                        type="month"
                         value={effectiveDetailStart}
+                        min={categoryDetailDateBounds.min || undefined}
                         max={effectiveDetailEnd || undefined}
                         onChange={(e) => setCategoryDetailStart(e.target.value)}
                         className={`bg-transparent outline-none ${isDarkMode ? 'text-slate-200 [color-scheme:dark]' : 'text-gray-700'}`}
                       />
                       <i className="fa-solid fa-arrow-right text-[10px] opacity-50"></i>
                       <input
-                        type="date"
+                        type="month"
                         value={effectiveDetailEnd}
                         min={effectiveDetailStart || undefined}
+                        max={categoryDetailDateBounds.max || undefined}
                         onChange={(e) => setCategoryDetailEnd(e.target.value)}
                         className={`bg-transparent outline-none ${isDarkMode ? 'text-slate-200 [color-scheme:dark]' : 'text-gray-700'}`}
                       />
@@ -1517,7 +1713,7 @@ export default function Analytics({ changePage, onLogout }) {
 
                   {!categoryDetail ? (
                     <div className={`h-48 flex items-center justify-center text-sm border border-dashed rounded-xl ${isDarkMode ? 'bg-[#0F172A]/50 border-slate-700 text-slate-500' : 'bg-gray-50/50 border-gray-200 text-gray-400'}`}>
-                      No data found for this category in the selected date range.
+                      No data found for this category in the selected month range.
                     </div>
                   ) : (
                     <div className="space-y-6">
@@ -1526,7 +1722,7 @@ export default function Analytics({ changePage, onLogout }) {
                         {[
                           { label: 'Average PO Value', value: formatUSD(categoryDetail.avgPO), change: categoryDetail.avgChange, icon: 'fa-coins' },
                           { label: 'Total PO', value: categoryDetail.totalPO.toLocaleString(), change: categoryDetail.poChange, icon: 'fa-file-lines' },
-                          { label: 'Total Spend', value: formatUSD(categoryDetail.totalSpend), change: categoryDetail.spendChange, icon: 'fa-sack-dollar' },
+                          { label: 'Total Spend', value: formatSpend(categoryDetail.totalSpend), change: categoryDetail.spendChange, icon: 'fa-sack-dollar' },
                         ].map((card, idx) => (
                           <div key={idx} className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
                             <div className="flex items-center gap-2 mb-2">
@@ -1556,15 +1752,29 @@ export default function Analytics({ changePage, onLogout }) {
                           </div>
                           {(() => {
                             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                            const prevVals = categoryDetail.monthly.map((m) => m.prev);
-                            const currVals = categoryDetail.monthly.map((m) => m.curr);
-                            const maxV = Math.max(...prevVals, ...currVals, 1);
+                            // Bulan tanpa transaksi = null (bukan 0), sehingga garis putus di bulan tersebut
+                            const prevVals = categoryDetail.monthly.map((m) => (m.prevN > 0 ? m.prev : null));
+                            const currVals = categoryDetail.monthly.map((m) => (m.currN > 0 ? m.curr : null));
+                            const maxV = Math.max(...prevVals.map((v) => v ?? 0), ...currVals.map((v) => v ?? 0), 1);
                             const chartL = 55, chartR = 610, yTop = 15, yBottom = 190;
                             const xOf = (i) => chartL + (i * (chartR - chartL)) / 11;
                             const yOf = (v) => yBottom - (v / maxV) * (yBottom - yTop);
-                            const prevPts = prevVals.map((v, i) => ({ x: xOf(i), y: yOf(v) }));
-                            const currPts = currVals.map((v, i) => ({ x: xOf(i), y: yOf(v) }));
-                            const areaPath = `${generateMonotoneSvgPath(currPts)} L ${xOf(11)} ${yBottom} L ${xOf(0)} ${yBottom} Z`;
+                            const prevPts = prevVals.map((v, i) => (v === null ? null : { x: xOf(i), y: yOf(v) }));
+                            const currPts = currVals.map((v, i) => (v === null ? null : { x: xOf(i), y: yOf(v) }));
+                            // Area di bawah garis tahun berjalan: satu bidang per segmen yang tersambung (tidak menyeberangi bulan kosong)
+                            const areaPath = (() => {
+                              const segs = [];
+                              let cur = [];
+                              currPts.forEach((pt) => {
+                                if (pt) cur.push(pt);
+                                else { if (cur.length) segs.push(cur); cur = []; }
+                              });
+                              if (cur.length) segs.push(cur);
+                              return segs
+                                .filter((seg) => seg.length > 1)
+                                .map((seg) => `${generateMonotoneSvgPath(seg)} L ${seg[seg.length - 1].x} ${yBottom} L ${seg[0].x} ${yBottom} Z`)
+                                .join(' ');
+                            })();
                             return (
                               <div className="w-full h-52">
                                 <svg viewBox="0 0 640 220" className="w-full h-full overflow-visible font-sans">
@@ -1586,8 +1796,8 @@ export default function Analytics({ changePage, onLogout }) {
                                   <path d={areaPath} fill="url(#trendAreaFill)" stroke="none" />
                                   <path d={generateMonotoneSvgPath(prevPts)} fill="none" stroke="#3B82F6" strokeWidth="2.5" strokeLinecap="round" />
                                   <path d={generateMonotoneSvgPath(currPts)} fill="none" stroke="#EF4444" strokeWidth="2.5" strokeLinecap="round" />
-                                  {prevPts.map((pt, i) => <circle key={`pv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#3B82F6" strokeWidth="2" />)}
-                                  {currPts.map((pt, i) => <circle key={`cv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />)}
+                                  {prevPts.map((pt, i) => pt && <circle key={`pv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#3B82F6" strokeWidth="2" />)}
+                                  {currPts.map((pt, i) => pt && <circle key={`cv-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />)}
                                   {months.map((m, i) => (
                                     <text key={`tm-${i}`} x={xOf(i)} y="207" textAnchor="middle" className={`text-[9px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}>{m}</text>
                                   ))}
@@ -1600,56 +1810,195 @@ export default function Analytics({ changePage, onLogout }) {
                         <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
                           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
                             <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Supplier Contribution (Pareto Analysis)</h4>
-                            <div className={`inline-flex p-0.5 rounded-lg text-[10px] font-semibold ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
-                              {[['supplier', 'By PO Value'], ['po', 'By PO']].map(([key, label]) => (
-                                <button
-                                  key={key}
-                                  onClick={() => setParetoMode(key)}
-                                  className={`px-2 py-1 rounded-md transition-colors ${paretoMode === key ? 'bg-red-600 text-white shadow-sm' : (isDarkMode ? 'text-slate-400 hover:text-slate-200' : 'text-gray-500 hover:text-gray-800')}`}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
+                            {categoryDetail.pareto.rows.length > 0 && (
+                              <span className={`text-[10px] font-semibold px-2 py-1 rounded-md ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-white text-gray-600 border border-gray-200'}`}>
+                                {categoryDetail.pareto.vitalCount} of {categoryDetail.pareto.rows.length} suppliers = 80% of spend
+                              </span>
+                            )}
                           </div>
                           {(() => {
-                            const { rows, total } = categoryParetoData;
+                            const { rows, total, vitalCount } = categoryDetail.pareto;
                             if (rows.length === 0) {
                               return <div className={`h-52 flex items-center justify-center text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No data.</div>;
                             }
-                            const shown = rows.slice(0, 6);
+
+                            // Tampilkan 10 supplier terbesar
+                            const MAX_BARS = 10;
+                            const shown = rows.slice(0, MAX_BARS);
+
                             const n = shown.length;
-                            const chartL = 40, chartR = 610, yTop = 15, yBottom = 165;
+                            const chartL = 52, chartR = 588, yTop = 18, yBottom = 170;
                             const band = (chartR - chartL) / n;
-                            const barW = Math.min(50, band * 0.55);
+                            const barW = Math.min(46, band * 0.6);
                             const cx = (i) => chartL + band * i + band / 2;
                             const yOfPct = (pct) => yBottom - (pct / 100) * (yBottom - yTop);
                             const linePts = shown.map((r, i) => ({ x: cx(i), y: yOfPct(r.cumPct) }));
+                            // Garis kumulatif lurus antar titik (bukan kurva halus) supaya tidak melengkung/melewati 100%
+                            const linePath = linePts.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x} ${pt.y}`).join(' ');
                             const trunc = (t, m) => (t.length > m ? `${t.slice(0, m - 1)}…` : t);
+                            const ticks = [0, 20, 40, 60, 80, 100];
+                            const vitalColor = '#3B82F6';
+                            const otherColor = isDarkMode ? '#475569' : '#BFDBFE';
+
                             return (
-                              <div className="w-full h-52">
-                                <svg viewBox="0 0 640 200" className="w-full h-full overflow-visible font-sans">
-                                  {[0, 25, 50, 75, 100].map((pct) => {
-                                    const y = yOfPct(pct);
-                                    return <line key={`sg-${pct}`} x1={chartL} y1={y} x2={chartR} y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" strokeWidth="1" />;
-                                  })}
-                                  {shown.map((r, i) => {
-                                    const h = total > 0 ? (r.spend / total) * (yBottom - yTop) : 0;
-                                    const x = cx(i) - barW / 2;
-                                    const y = yBottom - h;
-                                    return (
-                                      <g key={`sb-${i}`}>
-                                        <title>{`${r.name}: ${formatUSD(r.spend)} (${r.share.toFixed(1)}%)`}</title>
-                                        <path d={generateRoundedBar(x, y, barW, h, 3)} fill="#3B82F6" />
-                                        <text x={cx(i)} y={y - 6} textAnchor="middle" className={`text-[9px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}>{r.share.toFixed(0)}%</text>
-                                        <text x={cx(i)} y="180" textAnchor="middle" className={`text-[9px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}>{trunc(r.name, 10)}</text>
+                              <>
+                                <div className="w-full h-64">
+                                  <svg viewBox="0 0 640 240" className="w-full h-full overflow-visible font-sans">
+                                    {/* Grid + sumbu kiri (USD) & kanan (% kumulatif) */}
+                                    {ticks.map((pct) => {
+                                      const y = yOfPct(pct);
+                                      return (
+                                        <g key={`sg-${pct}`}>
+                                          <line x1={chartL} y1={y} x2={chartR} y2={y} stroke={isDarkMode ? '#334155' : '#E5E7EB'} strokeDasharray="4 4" strokeWidth="1" />
+                                          <text x={chartL - 8} y={y + 3} textAnchor="end" className={`text-[9px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>{formatShortNumber((total * pct) / 100)}</text>
+                                          <text x={chartR + 8} y={y + 3} textAnchor="start" className={`text-[9px] ${isDarkMode ? 'fill-slate-400' : 'fill-gray-500'}`}>{pct}%</text>
+                                        </g>
+                                      );
+                                    })}
+
+                                    {/* Batang: biru = "vital few" (sampai 80%), pucat = sisanya */}
+                                    {shown.map((r, i) => {
+                                      const h = total > 0 ? (r.spend / total) * (yBottom - yTop) : 0;
+                                      const x = cx(i) - barW / 2;
+                                      const y = yBottom - h;
+                                      const isVital = i < vitalCount;
+                                      const labelInside = h >= 22;
+                                      const isActive = paretoSelectedSupplier === r.name;
+                                      const isDimmed = paretoSelectedSupplier && !isActive;
+                                      return (
+                                        <g
+                                          key={`sb-${i}`}
+                                          onClick={() => setParetoSelectedSupplier(isActive ? null : r.name)}
+                                          style={{ cursor: 'pointer', opacity: isDimmed ? 0.45 : 1, transition: 'opacity 0.15s' }}
+                                        >
+                                          <title>{`${r.name}: ${formatSpend(r.spend)} (${r.share.toFixed(1)}% of total, cumulative ${r.cumPct.toFixed(1)}%) - click for details`}</title>
+                                          {/* Area klik selebar kolom supaya batang kecil tetap mudah diklik */}
+                                          <rect x={chartL + band * i} y={yTop} width={band} height={yBottom - yTop + 60} fill="transparent" />
+                                          <path d={generateRoundedBar(x, y, barW, h, 3)} fill={isVital ? vitalColor : otherColor} stroke={isActive ? (isDarkMode ? '#F8FAFC' : '#1E3A8A') : 'none'} strokeWidth={isActive ? 2 : 0} />
+                                          {labelInside ? (
+                                            <text x={cx(i)} y={y + 13} textAnchor="middle" className={`text-[9px] font-bold ${isVital ? 'fill-white' : (isDarkMode ? 'fill-slate-200' : 'fill-blue-900')}`}>{r.share.toFixed(0)}%</text>
+                                          ) : (
+                                            <text x={cx(i)} y={y - 5} textAnchor="middle" className={`text-[9px] font-bold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}>{r.share.toFixed(0)}%</text>
+                                          )}
+                                          {/* Label supplier (miring supaya nama panjang tidak saling tabrak) */}
+                                          <text
+                                            x={cx(i)}
+                                            y={yBottom + 14}
+                                            textAnchor="end"
+                                            transform={`rotate(-35 ${cx(i)} ${yBottom + 14})`}
+                                            className={`text-[9px] font-medium ${isDarkMode ? 'fill-slate-400' : 'fill-gray-600'}`}
+                                          >
+                                            {trunc(r.name, 16)}
+                                          </text>
+                                        </g>
+                                      );
+                                    })}
+
+                                    {/* Garis kumulatif % */}
+                                    <path d={linePath} fill="none" stroke="#EF4444" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                                    {linePts.map((pt, i) => (
+                                      <g key={`sc-${i}`}>
+                                        <circle cx={pt.x} cy={pt.y} r="3.5" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />
+                                        <text x={pt.x} y={pt.y - 8} textAnchor="middle" className="text-[9px] font-bold fill-red-500">{shown[i].cumPct.toFixed(0)}%</text>
                                       </g>
-                                    );
-                                  })}
-                                  <path d={generateMonotoneSvgPath(linePts)} fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" />
-                                  {linePts.map((pt, i) => <circle key={`sc-${i}`} cx={pt.x} cy={pt.y} r="3" fill={isDarkMode ? '#1E293B' : '#fff'} stroke="#EF4444" strokeWidth="2" />)}
-                                </svg>
-                              </div>
+                                    ))}
+                                  </svg>
+                                </div>
+
+                                {/* Legenda */}
+                                <div className={`mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-semibold ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: vitalColor }}></span>Vital few (up to 80%)</div>
+                                  <div className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-sm" style={{ background: otherColor }}></span>Remaining suppliers</div>
+                                  <div className="flex items-center gap-1.5"><span className="w-4 h-0.5 bg-red-500"></span>Cumulative %</div>
+                                </div>
+
+                                {/* Detail supplier yang diklik */}
+                                {(() => {
+                                  const idx = rows.findIndex((r) => r.name === paretoSelectedSupplier);
+                                  const hint = (
+                                    <p className={`mt-3 text-[11px] italic ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                                      Click a bar to see the supplier's data.
+                                    </p>
+                                  );
+                                  if (idx === -1) return hint;
+                                  const sel = rows[idx];
+                                  const isVitalSel = idx < vitalCount;
+                                  const stats = [
+                                    { label: 'Rank', value: `#${idx + 1} of ${rows.length}` },
+                                    { label: 'Total Spend', value: formatSpend(sel.spend) },
+                                    { label: 'Share of Total', value: `${sel.share.toFixed(1)}%` },
+                                    { label: 'Cumulative', value: `${sel.cumPct.toFixed(1)}%` },
+                                    { label: 'Total PO', value: sel.count },
+                                    { label: 'Avg PO Value', value: formatUSD(sel.avg) }
+                                  ];
+                                  return (
+                                    <>
+                                    {hint}
+                                    <div
+                                      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-[2px]"
+                                      onClick={() => setParetoSelectedSupplier(null)}
+                                    >
+                                    <div
+                                      role="dialog"
+                                      aria-modal="true"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className={`w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 rounded-2xl border shadow-2xl ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}
+                                    >
+                                      <div className="flex items-start justify-between gap-2 mb-4">
+                                        <div className="min-w-0">
+                                          <div className={`font-bold text-sm truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{sel.name}</div>
+                                          <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${isVitalSel ? (isDarkMode ? 'bg-blue-500/15 text-blue-400' : 'bg-blue-50 text-blue-600') : (isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600')}`}>
+                                            {isVitalSel ? 'Vital few (top 80%)' : 'Remaining suppliers'}
+                                          </span>
+                                        </div>
+                                        <button
+                                          onClick={() => setParetoSelectedSupplier(null)}
+                                          className={`text-xs px-2 py-1 rounded-md ${isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-gray-500 hover:bg-gray-100'}`}
+                                          aria-label="Close detail"
+                                        >
+                                          <i className="fa-solid fa-xmark"></i>
+                                        </button>
+                                      </div>
+
+                                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                                        {stats.map((s) => (
+                                          <div key={s.label} className={`px-3 py-2 rounded-md ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                                            <div className={`text-[10px] uppercase font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{s.label}</div>
+                                            <div className={`text-sm font-bold ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{s.value}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+
+                                      <div className="overflow-x-auto max-h-72 overflow-y-auto">
+                                        <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                                          <thead className={`uppercase border-b sticky top-0 ${isDarkMode ? 'border-slate-700 text-slate-500 bg-slate-900' : 'border-gray-200 text-gray-400 bg-white'}`}>
+                                            <tr>
+                                              <th className="py-2 pr-2 font-semibold">PO Number</th>
+                                              <th className="py-2 pr-2 font-semibold">Date</th>
+                                              <th className="py-2 pr-2 font-semibold">Subcategory</th>
+                                              <th className="py-2 pr-2 font-semibold text-right">PO Value</th>
+                                              <th className="py-2 pl-2 font-semibold">Status</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {sel.orders.map((o, i) => (
+                                              <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                                                <td className="py-2 pr-2 font-medium">{o.poNumber || '-'}</td>
+                                                <td className="py-2 pr-2 whitespace-nowrap">{formatDateID(o.date)}</td>
+                                                <td className="py-2 pr-2">{getOrderSubcategory(o)}</td>
+                                                <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(getOrderTotal(o))}</td>
+                                                <td className="py-2 pl-2">{o.status}</td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                    </div>
+                                    </>
+                                  );
+                                })()}
+                              </>
                             );
                           })()}
                         </div>
@@ -1672,7 +2021,7 @@ export default function Analytics({ changePage, onLogout }) {
                                 {categoryDetail.subRows.map((r, i) => (
                                   <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                                     <td className="py-2 pr-2 font-medium">{r.name}</td>
-                                    <td className="py-2 pr-2 text-right whitespace-nowrap">{formatUSD(r.value)}</td>
+                                    <td className="py-2 pr-2 text-right whitespace-nowrap">{formatSpend(r.value)}</td>
                                     <td className="py-2 pl-2 w-32">
                                       <div className="flex items-center gap-2">
                                         <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-200'}`}>
@@ -1688,7 +2037,7 @@ export default function Analytics({ changePage, onLogout }) {
                                 )}
                                 <tr className="font-bold">
                                   <td className={`py-2 pr-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total</td>
-                                  <td className={`py-2 pr-2 text-right whitespace-nowrap ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(categoryDetail.totalSpend)}</td>
+                                  <td className={`py-2 pr-2 text-right whitespace-nowrap ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatSpend(categoryDetail.totalSpend)}</td>
                                   <td className={`py-2 pl-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>100%</td>
                                 </tr>
                               </tbody>
@@ -1716,7 +2065,7 @@ export default function Analytics({ changePage, onLogout }) {
                                     <td className="py-2 pr-2 font-medium">{s.name}</td>
                                     <td className="py-2 pr-2 text-right">{s.count}</td>
                                     <td className="py-2 pr-2 text-right whitespace-nowrap">{formatUSD(s.avg)}</td>
-                                    <td className="py-2 pl-2 text-right whitespace-nowrap font-semibold">{formatUSD(s.spend)}</td>
+                                    <td className="py-2 pl-2 text-right whitespace-nowrap font-semibold">{formatSpend(s.spend)}</td>
                                   </tr>
                                 ))}
                                 {categoryDetail.topSuppliers.length === 0 && (
@@ -1799,6 +2148,19 @@ export default function Analytics({ changePage, onLogout }) {
                   ))}
                 </select>
               </div>
+              <div className="w-56">
+                <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Category Group</label>
+                <select
+                  value={compareCategory}
+                  onChange={(e) => setCompareCategory(e.target.value)}
+                  className={`w-full text-sm font-semibold rounded-lg p-2.5 outline-none cursor-pointer border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+                >
+                  <option value="">All Categories</option>
+                  {compareCategoryList.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </div>
               <div className="flex-1 min-w-[240px] max-w-md relative" ref={compareSearchRef}>
                 <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Add Supplier</label>
                 <div className="relative">
@@ -1809,7 +2171,7 @@ export default function Analytics({ changePage, onLogout }) {
                     onChange={(e) => { setCompareSupplierSearch(e.target.value); setShowCompareDropdown(true); }}
                     onFocus={() => setShowCompareDropdown(true)}
                     disabled={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS}
-                    placeholder={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS ? `Maximum ${MAX_COMPARE_SUPPLIERS} suppliers` : 'Search & add supplier...'}
+                    placeholder={compareSuppliers.length >= MAX_COMPARE_SUPPLIERS ? `Maximum ${MAX_COMPARE_SUPPLIERS} suppliers` : (compareCategory ? `Search suppliers in ${compareCategory}...` : 'Search & add supplier...')}
                     className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
                   />
                 </div>
@@ -1817,7 +2179,7 @@ export default function Analytics({ changePage, onLogout }) {
                   <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
                     {compareSupplierOptions.length === 0 ? (
                       <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                        {supplierList.length === 0 ? 'No supplier data available' : 'No matching suppliers'}
+                        {supplierList.length === 0 ? 'No supplier data available' : (compareCategory ? `No matching suppliers in "${compareCategory}"` : 'No matching suppliers')}
                       </div>
                     ) : (
                       compareSupplierOptions.map((sup, idx) => (
@@ -1861,9 +2223,9 @@ export default function Analytics({ changePage, onLogout }) {
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto rounded-lg border border-gray-200/60 dark:border-slate-700">
+                <div className={`overflow-x-auto rounded-lg border ${isDarkMode ? 'border-slate-700' : 'border-gray-200/60'}`}>
                   <table className={`w-full text-left text-sm ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
-                    <thead className={`text-xs uppercase bg-gray-50 dark:bg-slate-800/50 border-b ${isDarkMode ? 'border-slate-700 text-slate-400' : 'border-gray-200 text-gray-500'}`}>
+                    <thead className={`text-xs uppercase border-b ${isDarkMode ? 'bg-slate-800/50 border-slate-700 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
                       <tr>
                         <th className="px-4 py-3 font-semibold">Supplier</th>
                         <th className="px-4 py-3 font-semibold text-right">Total Spend (USD)</th>
@@ -1881,7 +2243,7 @@ export default function Analytics({ changePage, onLogout }) {
                               {row.name}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-right font-bold text-red-500">{formatUSD(row.totalSpend)}</td>
+                          <td className="px-4 py-3 text-right font-bold text-red-500">{formatSpend(row.totalSpend)}</td>
                           <td className="px-4 py-3 text-right">{row.totalOrders.toLocaleString('en-US')}</td>
                           <td className="px-4 py-3 text-right">{formatUSD(row.avgPO)}</td>
                           <td className="px-4 py-3 text-right">
@@ -1902,7 +2264,7 @@ export default function Analytics({ changePage, onLogout }) {
                         <div key={row.name}>
                           <div className="flex items-center justify-between mb-1 text-xs font-semibold">
                             <span className={isDarkMode ? 'text-slate-300' : 'text-gray-700'}>{row.name}</span>
-                            <span className={isDarkMode ? 'text-slate-400' : 'text-gray-500'}>{formatUSD(row.totalSpend)}</span>
+                            <span className={isDarkMode ? 'text-slate-400' : 'text-gray-500'}>{formatSpend(row.totalSpend)}</span>
                           </div>
                           <div className={`w-full h-3 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
                             <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: row.color }}></div>
@@ -1935,7 +2297,7 @@ export default function Analytics({ changePage, onLogout }) {
 
                     <p className={`text-[11px] mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
                       {compareGrowthChart.mode === 'year'
-                        ? 'Change in total spend over the last 30 days compared to the start of the range (0% = starting point). Hover over the chart to see values.'
+                        ? 'Change in total spend over the last 30 days compared to each supplier\'s first period with orders (0% = starting point, -100% = no spend in the last 30 days). Hover over the chart to see values.'
                         : 'Spend per period compared with each supplier\'s average (0% = average). Hover over the chart to see values.'}
                     </p>
                     <div className="w-full h-80 relative">
@@ -2085,7 +2447,7 @@ export default function Analytics({ changePage, onLogout }) {
                                   <g key={`tt-${row.name}`}>
                                     <circle cx={boxX + 14} cy={50 + r * lineH} r="3.5" fill={row.color} />
                                     <text x={boxX + 24} y={54 + r * lineH} className={`text-[10px] ${isDarkMode ? 'fill-slate-300' : 'fill-gray-600'}`}>
-                                      {shortName}: {formatUSD(row.spend[i])} ({pct >= 0 ? '+' : ''}{pct.toFixed(0)}%)
+                                      {shortName}: {formatSpend(row.spend[i])} ({pct >= 0 ? '+' : ''}{pct.toFixed(0)}%)
                                     </text>
                                   </g>
                                 );
@@ -2099,7 +2461,7 @@ export default function Analytics({ changePage, onLogout }) {
                   </div>
 
                   <div className={`flex flex-wrap items-center gap-1 px-4 py-3 border-t ${isDarkMode ? 'border-slate-800' : 'border-gray-200'}`}>
-                    {['1D', '5D', '1M', '6M', 'YTD', '1Y', '2Y', '3Y', '4Y', '5Y', 'MAX'].map((r) => (
+                    {COMPARE_TIME_RANGES.map((r) => (
                       <button
                         key={r}
                         type="button"
@@ -2138,7 +2500,7 @@ export default function Analytics({ changePage, onLogout }) {
                   {highlightModalData.title} ({selectedYear === 'All' ? 'All Time' : selectedYear})
                 </h3>
                 <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>
-                  {highlightModalData.count.toLocaleString()} order{highlightModalData.count === 1 ? '' : 's'} · Total {formatUSD(highlightModalData.totalSpendOfRows)}
+                  {highlightModalData.count.toLocaleString()} order{highlightModalData.count === 1 ? '' : 's'} · Total {formatSpend(highlightModalData.totalSpendOfRows)}
                   {selectedSupplier ? ` · ${selectedSupplier}` : ''}
                 </p>
               </div>
@@ -2157,31 +2519,39 @@ export default function Analytics({ changePage, onLogout }) {
                     <th className="py-2 pr-2 font-semibold">PO Number</th>
                     <th className="py-2 pr-2 font-semibold">Date</th>
                     <th className="py-2 pr-2 font-semibold">Supplier</th>
-                    <th className="py-2 pr-2 font-semibold text-right">PO Value</th>
-                    <th className="py-2 pl-2 font-semibold">Status</th>
+                    <th className="py-2 pl-2 font-semibold text-right">PO Value</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {highlightModalData.rows.map((o, i) => {
-                    const paid = highlightModalData.isPaid(o);
-                    const statusStyle = paid
-                      ? (isDarkMode ? 'bg-emerald-500/15 text-emerald-400' : 'bg-emerald-50 text-emerald-600')
-                      : (isDarkMode ? 'bg-red-500/15 text-red-400' : 'bg-red-50 text-red-600');
+                  {highlightModalData.rows.slice(0, highlightVisible).map(({ o, total }, i) => {
                     return (
                       <tr key={o.id || i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
                         <td className="py-2 pr-2 font-medium">{o.poNumber || '-'}</td>
                         <td className="py-2 pr-2 whitespace-nowrap">{formatDateID(o.date)}</td>
                         <td className="py-2 pr-2">{getOrderSupplier(o)}</td>
-                        <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(getOrderTotal(o))}</td>
-                        <td className="py-2 pl-2"><span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${statusStyle}`}>{getOrderStatus(o) || '-'}</span></td>
+                        <td className="py-2 pl-2 text-right whitespace-nowrap font-semibold">{formatUSD(total)}</td>
                       </tr>
                     );
                   })}
                   {highlightModalData.rows.length === 0 && (
-                    <tr><td colSpan={5} className={`py-6 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No orders found.</td></tr>
+                    <tr><td colSpan={4} className={`py-6 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No orders found.</td></tr>
                   )}
                 </tbody>
               </table>
+              {highlightModalData.rows.length > highlightVisible && (
+                <div className="flex items-center justify-between gap-3 pt-4">
+                  <p className={`text-[11px] ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                    Showing {highlightVisible.toLocaleString()} of {highlightModalData.rows.length.toLocaleString()} orders
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setHighlightVisible((v) => v + HIGHLIGHT_PAGE_SIZE)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer transition-colors"
+                  >
+                    Show {HIGHLIGHT_PAGE_SIZE} more
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>

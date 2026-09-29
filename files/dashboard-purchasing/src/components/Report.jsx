@@ -1,13 +1,18 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRole } from '../context/RoleContext';
 import { useTheme } from '../hooks/useTheme';
-import AppLayout from './AppLayout'; // header + sidebar + bar menu atas (sama seperti Dashboard)
+import AppLayout from './AppLayout'; // header + sidebar + top menu bar (same as Dashboard)
+import { API_ENDPOINTS } from '../utils/api.config';
+
+// Report history endpoint: use API_ENDPOINTS.REPORTS if available, otherwise derive it from the PURCHASE_ORDERS address
+const REPORTS_ENDPOINT =
+  API_ENDPOINTS.REPORTS || API_ENDPOINTS.PURCHASE_ORDERS.replace(/\/purchase-orders\/?$/, '/reports');
 
 // ---------------------------------------------------------------------------
-// INDEXEDDB CACHE — supaya halaman Report langsung tampil dengan data terakhir
-// (instan, dari disk) sambil data terbaru diambil dari backend di belakang layar.
-// Cache-nya dibuat terpisah dari PurchaseOrders.jsx (struktur JSON beda), tidak
-// bentrok satu sama lain.
+// INDEXEDDB CACHE — so the Report page shows the latest saved data instantly
+// (from disk) while fresh data is fetched from the backend in the background.
+// This cache is separate from PurchaseOrders.jsx (different JSON structure),
+// so the two never conflict.
 // ---------------------------------------------------------------------------
 const REPORT_IDB_NAME = 'DetpakReport_DB';
 const REPORT_IDB_STORE = 'report_cache';
@@ -56,23 +61,38 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   const [orders, setOrders] = useState([]);
   const [isLoadingOrders, setIsLoadingOrders] = useState(true);
-  const [isReportOpen, setIsReportOpen] = useState(true);
-  const [activeReportTab, setActiveReportTab] = useState('generate');
+
+  // "Year" filter: a window of 3 consecutive years (e.g. 2024 -> columns 2024, 2025, 2026)
+  const YEAR_SPAN = 3;
+  const currentYear = new Date().getFullYear();
+  const [startYear, setStartYear] = useState(currentYear - (YEAR_SPAN - 1));
+  const [isYearOpen, setIsYearOpen] = useState(false);
+  const yearDropdownRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (yearDropdownRef.current && !yearDropdownRef.current.contains(e.target)) {
+        setIsYearOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [filterStatus, setFilterStatus] = useState('All Statuses');
   const [filterSupplier, setFilterSupplier] = useState('All Suppliers');
 
-  // Tema (terang/gelap), jam, profil & logout sekarang diurus AppLayout + useTheme (sama seperti Dashboard)
+  // Theme (light/dark), clock, profile & logout are now handled by AppLayout + useTheme (same as Dashboard)
   const [isDarkMode, setIsDarkMode] = useTheme();
 
-  // Durasi minimum garis loading tampil, supaya walau data sudah siap duluan
-  // (mis. langsung ketemu di cache IndexedDB), animasinya tetap sempat menyapu
-  // penuh dari kiri ke kanan dulu sebelum disembunyikan — tidak cuma "kedip".
+  // Minimum time the loading bar stays visible, so even if data is ready early
+  // (e.g. found right away in the IndexedDB cache), the animation still sweeps
+  // fully from left to right before hiding — instead of just flashing.
   const MIN_LOADING_MS = 900;
 
-  // FETCH DATA PURCHASE ORDERS DARI BACKEND DATABASE
+  // FETCH PURCHASE ORDERS DATA FROM THE BACKEND DATABASE
   useEffect(() => {
     const loadStartedAt = Date.now();
     const hideLoadingSoftly = () => {
@@ -92,18 +112,18 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
         return;
       }
 
-      // 1. Tampilkan dulu data terakhir dari cache (kalau ada) — supaya halaman
-      //    langsung keluar tanpa nunggu network, tidak ada layar kosong/loading lama.
+      // 1. Show the latest cached data first (if any) — so the page appears
+      //    immediately without waiting for the network, with no empty screen or long loading.
       const cached = await getReportCache();
       if (Array.isArray(cached) && cached.length > 0) {
         setOrders(cached);
         hideLoadingSoftly();
       }
 
-      // 2. Tetap ambil data terbaru dari backend di belakang layar, lalu update
-      //    tabel + cache begitu selesai (tanpa mengunci tampilan awal).
+      // 2. Still fetch the latest data from the backend in the background, then update
+      //    the table + cache once done (without blocking the initial view).
       try {
-        const response = await fetch('http://idws-n26010:5000/api/purchase-orders');
+        const response = await fetch(API_ENDPOINTS.PURCHASE_ORDERS);
         if (response.ok) {
           const data = await response.json();
           setOrders(data);
@@ -111,20 +131,9 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
           return;
         }
       } catch (e) {
-        console.error('Gagal ngambil data Purchase Orders dari backend:', e);
+        console.error('Failed to fetch Purchase Orders from the backend:', e);
       } finally {
         hideLoadingSoftly();
-      }
-
-      if (!cached) {
-        const savedData = localStorage.getItem('dataPO_Ladeu');
-        if (savedData) {
-          try {
-            setOrders(JSON.parse(savedData));
-          } catch (e) {
-            console.error('Gagal parse data dari localStorage:', e);
-          }
-        }
       }
     };
 
@@ -154,7 +163,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
   };
 
   const getOrderDate = (order) => {
-    const d = order.po_date || order.date || order.tanggal || order.orderDate || order.order_date;
+    const d = order.receipt_date || order.po_date || order.date || order.tanggal || order.orderDate || order.order_date;
     if (!d) return '-';
     return typeof d === 'string' && d.includes('T') ? d.split('T')[0] : d;
   };
@@ -179,8 +188,8 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   const getPoNumber = (order) => order.po_number || order.po_no || order.poNumber || order.noPO || order.nomorPO || '-';
 
-  // === Kolom khusus untuk tabel "Purchase Spending (Import)" ===
-  // (mengikuti struktur tabel purchase_orders: Product Group, Qty Received, UOM, Spending USD, Year, Local/Import)
+  // === Columns specific to the "Purchase Spending (Import)" table ===
+  // (follows the purchase_orders table structure: Product Group, Qty Received, UOM, Spending USD, Year, Local/Import)
   const getProductGroup = (order) =>
     order.product_group || order.productGroup || order.ProductGroup || 'Other';
 
@@ -198,7 +207,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
       if (typeof raw === 'string') return parseFloat(raw.replace(/[^0-9.-]/g, '')) || 0;
       return parseFloat(raw) || 0;
     }
-    // fallback: hitung dari total nilai IDR kalau kolom Spending USD tidak ada
+    // fallback: calculate from the total IDR value if the Spending USD column is missing
     return getOrderTotalIDR(order) / EXCHANGE_RATE;
   };
 
@@ -216,9 +225,9 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     return null;
   };
 
-  // Rekap "Purchase Spending (Imperial)": baris per Product Group (nama sama seperti di halaman Purchase Orders),
-  // kolom per tahun yang muncul di data (Quantity, Spending (USD), Price/UOM) — dinamis mengikuti data.
-  // Semua data dipakai (tidak difilter Local/Import).
+  // "Purchase Spending" summary: one row per Product Group (same names as on the Purchase Orders page),
+  // one column group per year found in the data (Quantity, Spending (USD), Price/UOM) — dynamic based on the data.
+  // All data is used (not filtered by Local/Import).
   const purchaseSpendingReport = useMemo(() => {
     const years = [...new Set(orders.map(getOrderYear).filter(Boolean))].sort();
 
@@ -238,13 +247,28 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     });
 
     const rows = Object.entries(byClass).map(([className, data]) => {
-      // UOM yang ditampilkan = UOM paling sering muncul untuk Product Group ini
+      // Displayed UOM = the most frequently used UOM for this Product Group
       const uom = Object.entries(data.uomCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || '-';
       return { className, uom, years: data.years };
     });
 
     return { years, rows };
   }, [orders]);
+
+  // Dropdown options: start year from (current year - 5) or the oldest year in the data, up to (current year - 1)
+  const yearOptions = useMemo(() => {
+    const dataYears = purchaseSpendingReport.years.map(Number).filter(Boolean);
+    const first = Math.min(currentYear - 5, ...(dataYears.length ? dataYears : [currentYear]));
+    const last = currentYear - 1;
+    const opts = [];
+    for (let y = first; y <= last; y++) {
+      opts.push({ value: y, label: `${y} (${y} \u2013 ${y + YEAR_SPAN - 1})` });
+    }
+    return opts;
+  }, [purchaseSpendingReport.years, currentYear]);
+
+  const selectedYearLabel = `${startYear} (${startYear} \u2013 ${startYear + YEAR_SPAN - 1})`;
+  const reportYears = Array.from({ length: YEAR_SPAN }, (_, i) => String(startYear + i));
 
   const formatQty = (number) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(number || 0);
 
@@ -283,18 +307,19 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     });
   }, [orders, filterStatus, filterSupplier, startDate, endDate]);
 
-  // EXPORT EXCEL & SIMPAN DISAAT YANG SAMA KE TABEL 'reports' DI MYSQL
+  // EXPORT EXCEL (Purchase Spending table for the selected year window)
+  // & save the history to the 'reports' table in MySQL
   const handleExportExcel = async () => {
-    if (filteredOrders.length === 0) {
-      alert('Tidak ada data untuk diekspor!');
+    if (purchaseSpendingReport.rows.length === 0) {
+      alert('There is no data to export!');
       return;
     }
 
-    const fileName = `Purchase_Orders_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+    const fileName = `Purchase_Spending_${reportYears[0]}-${reportYears[reportYears.length - 1]}_${new Date().toISOString().slice(0, 10)}.csv`;
 
-    // 1. Simpan catatan riwayat ke tabel 'reports' di MySQL
+    // 1. Save the history record to the 'reports' table in MySQL
     try {
-      await fetch('http://idws-n26010:5000/api/reports', {
+      await fetch(REPORTS_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -304,27 +329,30 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
         })
       });
     } catch (error) {
-      console.error('Gagal menyimpan riwayat report ke database:', error);
+      console.error('Failed to save report history to the database:', error);
     }
 
-    // 2. Proses Download File CSV/Excel di Browser
-    const headers = ['PO Number', 'Date', 'Supplier', 'Category', 'Status', 'Total Value (USD)'];
-    const rows = filteredOrders.map((o) => {
-      const idrValue = getOrderTotalIDR(o);
-      const usdValue = idrValue / EXCHANGE_RATE;
-      const escapeStr = (str) => `"${String(str).replace(/"/g, '""')}"`;
+    // 2. Download the CSV file (opens in Excel) in the browser
+    const escapeStr = (str) => `"${String(str).replace(/"/g, '""')}"`;
 
-      return [
-        escapeStr(getPoNumber(o)),
-        escapeStr(getOrderDate(o)),
-        escapeStr(getOrderSupplier(o)),
-        escapeStr(getOrderCategory(o)),
-        escapeStr(getOrderStatus(o)),
-        usdValue.toFixed(2)
-      ];
-    });
+    const headers = [
+      'Category',
+      'UOM',
+      ...reportYears.flatMap((yr) => [`${yr} Quantity`, `${yr} Spending (USD)`, `${yr} Price/UOM`]),
+    ];
 
-    const csvString = [headers.join(';'), ...rows.map((e) => e.join(';'))].join('\r\n');
+    const rows = purchaseSpendingReport.rows.map((row) => [
+      escapeStr(row.className),
+      escapeStr(row.uom),
+      ...reportYears.flatMap((yr) => {
+        const qty = row.years[yr]?.qty || 0;
+        const spendUSD = row.years[yr]?.spendUSD || 0;
+        const priceUOM = qty > 0 ? spendUSD / qty : 0;
+        return [qty.toFixed(2), spendUSD.toFixed(2), priceUOM.toFixed(2)];
+      }),
+    ]);
+
+    const csvString = [headers.map(escapeStr).join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
     const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
 
@@ -337,7 +365,7 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
-  
+
   const formatUSD = (number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(number || 0);
 
@@ -353,8 +381,8 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
 
   const statusOptions = ['All Statuses', 'Waiting for Approval', 'Approved', 'Processing', 'Shipped', 'Completed', 'Cancelled', 'Pending'];
 
-  // PAGINATION: tabel hanya merender 1 halaman sekaligus, bukan seluruh filteredOrders.
-  // Tanpa ini, data ribuan/ratusan-ribu baris akan bikin browser hang saat render tabel.
+  // PAGINATION: the table only renders one page at a time, not the whole filteredOrders.
+  // Without this, thousands/hundreds of thousands of rows would hang the browser while rendering.
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
@@ -380,6 +408,12 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
     return isDarkMode ? 'bg-amber-950/80 text-amber-400 border border-amber-800 font-bold' : 'bg-amber-100 text-amber-800 border border-amber-300 font-bold';
   };
 
+  const cellBorder = isDarkMode ? 'border-slate-700' : 'border-gray-200';
+  // Category & UOM columns are sticky (stay in place when the table scrolls sideways) -> background must be solid
+  const stickyHeadBg = isDarkMode ? 'bg-[#0F172A]' : 'bg-slate-50';
+  const stickyBodyBg = isDarkMode ? 'bg-[#1E293B] group-hover:bg-slate-800' : 'bg-white group-hover:bg-gray-50';
+  const stickyShadow = 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.15)]';
+
   return (
     <AppLayout
       activePage="report"
@@ -387,17 +421,6 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
       onLogout={onLogout}
       isDarkMode={isDarkMode}
       setIsDarkMode={setIsDarkMode}
-      submenu={{
-        page: 'report',
-        open: isReportOpen,
-        onToggle: () => setIsReportOpen((prev) => !prev),
-        items: [
-          { id: 'generate', label: 'Generate Report', icon: 'fa-list-check' },
-          { id: 'export', label: 'Export Excel', icon: 'fa-file-excel' },
-        ],
-        activeId: activeReportTab,
-        onSelect: setActiveReportTab,
-      }}
     >
       {/* TOP LOADING BAR */}
       {isLoadingOrders && (
@@ -416,114 +439,127 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
         </div>
       )}
 
-          {activeReportTab === 'export' ? (
-            /* EXPORT EXCEL */
-            <div className="max-w-6xl mx-auto space-y-6">
-              <div>
-                <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-[#0C3B7C]'}`}>
-                  Excel Export
-                </h1>
-                <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-[#6B7280]'}`}>
-                  Export data supplier dan laporan Purchase Order ke file Excel.
-                </p>
-              </div>
-
-              <div className={`w-full rounded-2xl shadow-xs py-16 px-8 flex flex-col items-center text-center transition-colors ${isDarkMode ? 'bg-[#1E293B] border border-slate-800' : 'bg-white'}`}>
-                <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-6 shrink-0 ${isDarkMode ? 'bg-emerald-950/80 text-emerald-400' : 'bg-[#E2F7EB] text-[#008A52]'}`}>
-                  <svg className="w-7 h-7" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM13 3.5L18.5 9H13V3.5zM8.5 17.5l2-3.5-2-3.5h1.8l1.1 2.2 1.1-2.2h1.8l-2 3.5 2 3.5h-1.8l-1.1-2.2-1.1 2.2H8.5z"/>
-                  </svg>
+          {/* PURCHASE REPORT: Purchase Spending — summary per Product Group x Year (3-year window filter) */}
+            <div className="space-y-6">
+              <div className="flex flex-wrap justify-between items-start gap-4">
+                <div>
+                  <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Purchase Spending</h1>
+                  <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    Summary of quantity, spending, and total purchase value to compare performance over a selected period.
+                  </p>
                 </div>
 
-                <h2 className={`text-lg font-bold mb-2 ${isDarkMode ? 'text-white' : 'text-[#1F2937]'}`}>
-                  Export Supplier Data via Excel
-                </h2>
+                <div className="flex flex-wrap items-stretch gap-3">
+                {/* YEAR FILTER */}
+                <div className="flex items-stretch">
+                  <div className={`flex items-center gap-2.5 px-5 rounded-l-xl border border-r-0 text-sm font-semibold ${isDarkMode ? 'bg-[#1E293B] border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-[#1F2937]'}`}>
+                    <i className={`fa-regular fa-calendar ${isDarkMode ? 'text-slate-300' : 'text-[#0C3B7C]'}`}></i>
+                    <span>Year</span>
+                  </div>
+                  <div className="relative" ref={yearDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setIsYearOpen((prev) => !prev)}
+                      className={`h-full min-w-[200px] flex items-center justify-between gap-6 px-4 py-2.5 rounded-r-xl border-2 text-sm font-semibold cursor-pointer transition-colors ${
+                        isDarkMode ? 'bg-[#1E293B] text-white' : 'bg-white text-[#0C3B7C]'
+                      } ${isYearOpen ? 'border-blue-500' : isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}
+                    >
+                      <span>{selectedYearLabel}</span>
+                      <i className={`fa-solid ${isYearOpen ? 'fa-chevron-up' : 'fa-chevron-down'} text-xs`}></i>
+                    </button>
 
-                <p className={`text-sm max-w-xl mb-6 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-[#6B7280]'}`}>
-                  Export file .xlsx atau .xls untuk menyimpan data supplier dan laporan Purchase Order. Data yang diekspor akan menyesuaikan dengan filter yang dipilih.
-                </p>
+                    {isYearOpen && (
+                      <ul className={`absolute right-0 top-full mt-1.5 w-full min-w-[220px] z-50 rounded-xl border shadow-lg py-1.5 ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}>
+                        {yearOptions.map((opt) => {
+                          const isSelected = opt.value === startYear;
+                          return (
+                            <li key={opt.value}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setStartYear(opt.value);
+                                  setIsYearOpen(false);
+                                }}
+                                className={`w-full flex items-center justify-between px-4 py-2 text-sm text-left cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? isDarkMode ? 'bg-blue-950/60 text-blue-300 font-semibold' : 'bg-blue-50 text-[#1A56DB] font-semibold'
+                                    : isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-gray-600 hover:bg-gray-50'
+                                }`}
+                              >
+                                <span>{opt.label}</span>
+                                {isSelected && <i className="fa-solid fa-check text-xs"></i>}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                </div>
 
+                {/* EXPORT EXCEL */}
                 <button
+                  type="button"
                   onClick={handleExportExcel}
-                  className="bg-[#008A52] hover:bg-[#007344] active:scale-95 text-white font-medium px-5 py-2.5 rounded-lg text-sm flex items-center gap-2.5 transition-all shadow-xs cursor-pointer"
+                  disabled={purchaseSpendingReport.rows.length === 0}
+                  className="bg-[#008A52] hover:bg-[#007344] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium px-5 rounded-xl text-sm flex items-center gap-2.5 transition-all shadow-xs cursor-pointer"
                 >
-                  <i className="fa-solid fa-upload text-xs"></i>
-                  <span>Export Excel File</span>
+                  <i className="fa-solid fa-file-excel text-sm"></i>
+                  <span>Export Excel</span>
                 </button>
-
-                <p className={`text-xs mt-6 ${isDarkMode ? 'text-slate-500' : 'text-[#8A94A6]'}`}>
-                  Saat ini ada {filteredOrders.length} supplier/PO di database.
-                </p>
-
-                <button
-                  onClick={() => setActiveReportTab('generate')}
-                  className="mt-6 text-sm font-semibold text-[#1A56DB] hover:underline flex items-center gap-2 cursor-pointer transition-colors"
-                >
-                  <i className="fa-solid fa-arrow-left text-xs"></i>
-                  <span>Kembali ke Generate Report</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            /* GENERATE REPORT: Purchase Spending (Import) — rekap per Main Class x Tahun */
-            <div className="space-y-6">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h1 className={`text-[26px] font-bold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>Purchase Spending (Imperial)</h1>
-                  <p className={`text-sm mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Rekap quantity, spending, dan price/UOM untuk seluruh pembelian, per kategori dan per tahun.</p>
                 </div>
               </div>
 
               {/* TABLE: PURCHASE SPENDING */}
-              <div className={`rounded-2xl border shadow-xs overflow-hidden ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm whitespace-nowrap">
+              <div className={`rounded-2xl border shadow-xs p-5 ${isDarkMode ? 'bg-[#1E293B]/90 border-slate-800' : 'bg-white/80 border-gray-100'}`}>
+                <div className={`overflow-x-auto rounded-lg border-t border-l ${cellBorder}`}>
+                  <table className="w-full text-left text-sm whitespace-nowrap border-separate border-spacing-0">
                     <thead>
-                      <tr className={`border-b font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-400' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>
-                        <th rowSpan={2} className="py-4 px-6 align-bottom">Category</th>
-                        <th rowSpan={2} className="py-4 px-6 align-bottom">UOM</th>
-                        {purchaseSpendingReport.years.map((yr, idx) => (
+                      <tr className={`font-semibold text-xs uppercase ${isDarkMode ? 'bg-[#0F172A] text-slate-400' : 'bg-slate-50 text-gray-500'}`}>
+                        <th rowSpan={2} className={`py-4 px-4 align-middle border-b border-r ${cellBorder} sticky left-0 z-20 w-[190px] min-w-[190px] ${stickyHeadBg}`}>Category</th>
+                        <th rowSpan={2} className={`py-4 px-4 align-middle text-center border-b border-r ${cellBorder} sticky left-[190px] z-20 w-[80px] min-w-[80px] ${stickyHeadBg} ${stickyShadow}`}>UOM</th>
+                        {reportYears.map((yr) => (
                           <th
                             key={yr}
                             colSpan={3}
-                            className={`py-3 px-6 text-center ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}
+                            className={`py-3 px-4 text-center text-sm normal-case border-b border-r ${cellBorder} ${isDarkMode ? 'text-slate-200 bg-[#1E293B]' : 'text-gray-800 bg-white'}`}
                           >
                             {yr}
                           </th>
                         ))}
                       </tr>
-                      <tr className={`border-b font-semibold text-[11px] uppercase ${isDarkMode ? 'bg-[#0F172A] border-slate-800 text-slate-500' : 'bg-gray-50 border-gray-200 text-gray-400'}`}>
-                        {purchaseSpendingReport.years.map((yr, idx) => (
+                      <tr className={`font-semibold text-[11px] uppercase ${isDarkMode ? 'bg-[#0F172A] text-slate-500' : 'bg-slate-50 text-gray-400'}`}>
+                        {reportYears.map((yr) => (
                           <React.Fragment key={yr}>
-                            <th className={`py-2 px-4 text-right ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}>Quantity</th>
-                            <th className="py-2 px-4 text-right">Spending (USD)</th>
-                            <th className="py-2 px-4 text-right">Price/UOM</th>
+                            <th className={`py-2.5 px-4 text-center border-b border-r ${cellBorder}`}>Quantity</th>
+                            <th className={`py-2.5 px-4 text-center border-b border-r ${cellBorder}`}>Spending (USD)</th>
+                            <th className={`py-2.5 px-4 text-center border-b border-r ${cellBorder}`}>Price/UOM</th>
                           </React.Fragment>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/80 text-slate-300' : 'divide-gray-100 text-gray-700'}`}>
+                    <tbody className={isDarkMode ? 'text-slate-300' : 'text-gray-700'}>
                       {purchaseSpendingReport.rows.length === 0 ? (
                         <tr>
-                          <td colSpan={2 + purchaseSpendingReport.years.length * 3} className="py-10 text-center text-gray-400">
+                          <td colSpan={2 + reportYears.length * 3} className="py-10 text-center text-gray-400">
                             No purchase data found.
                           </td>
                         </tr>
                       ) : (
                         purchaseSpendingReport.rows.map((row) => (
-                          <tr key={row.className} className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-gray-50'}`}>
-                            <td className={`py-4 px-6 font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{row.className}</td>
-                            <td className={`py-4 px-6 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{row.uom}</td>
-                            {purchaseSpendingReport.years.map((yr, idx) => {
+                          <tr key={row.className} className="group">
+                            <td className={`py-4 px-4 font-bold border-b border-r ${cellBorder} sticky left-0 z-10 w-[190px] min-w-[190px] transition-colors ${stickyBodyBg} ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{row.className}</td>
+                            <td className={`py-4 px-4 text-center border-b border-r ${cellBorder} sticky left-[190px] z-10 w-[80px] min-w-[80px] transition-colors ${stickyBodyBg} ${stickyShadow} ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{row.uom}</td>
+                            {reportYears.map((yr) => {
                               const cell = row.years[yr];
                               const qty = cell?.qty || 0;
                               const spendUSD = cell?.spendUSD || 0;
                               const priceUOM = qty > 0 ? spendUSD / qty : 0;
                               return (
                                 <React.Fragment key={yr}>
-                                  <td className={`py-4 px-4 text-right ${idx > 0 ? (isDarkMode ? 'border-l border-slate-800' : 'border-l border-gray-200') : ''}`}>{formatQty(qty)}</td>
-                                  <td className="py-4 px-4 text-right">{formatUSD(spendUSD)}</td>
-                                  <td className={`py-4 px-4 text-right font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSD(priceUOM)}</td>
+                                  <td className={`py-4 px-4 text-right border-b border-r ${cellBorder} transition-colors ${isDarkMode ? 'group-hover:bg-slate-800/50' : 'group-hover:bg-gray-50'}`}>{formatQty(qty)}</td>
+                                  <td className={`py-4 px-4 text-right border-b border-r ${cellBorder} transition-colors ${isDarkMode ? 'group-hover:bg-slate-800/50' : 'group-hover:bg-gray-50'}`}>{formatUSD(spendUSD)}</td>
+                                  <td className={`py-4 px-4 text-right font-bold border-b border-r ${cellBorder} transition-colors ${isDarkMode ? 'text-white group-hover:bg-slate-800/50' : 'text-gray-900 group-hover:bg-gray-50'}`}>{formatUSD(priceUOM)}</td>
                                 </React.Fragment>
                               );
                             })}
@@ -535,7 +571,6 @@ export default function Report({ changePage, onLogout, orders: propOrders }) {
                 </div>
               </div>
             </div>
-          )}
     </AppLayout>
   );
 }

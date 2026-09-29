@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { useRole } from '../context/RoleContext';
 import AppLayout from './AppLayout'; // Sesuaikan path import jika berbeda
+import API_BASE_URL from '../utils/api.config';
 
 // Format tanggal untuk ditampilkan: menerima "DD/MM/YYYY", ISO datetime ("...T17:00:00.000Z"),
 // atau format lain, lalu dikembalikan dalam bentuk singkat "28 Jun 25" supaya tidak
@@ -19,8 +20,86 @@ const formatDisplayDate = (dateInput) => {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
 };
 
+// Format bulan & tahun untuk sumbu X grafik, contoh: "Feb 26"
+const formatMonthYear = (dateInput) => {
+  if (!dateInput) return '-';
+  let d;
+  if (typeof dateInput === 'string' && /^\d{2}\/\d{2}\/\d{4}$/.test(dateInput)) {
+    const [day, month, year] = dateInput.split('/');
+    d = new Date(`${year}-${month}-${day}`);
+  } else {
+    d = new Date(dateInput);
+  }
+  if (isNaN(d.getTime())) return String(dateInput);
+  return d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+};
+
+// Kurva halus "monotone cubic" (Fritsch-Carlson): melewati semua titik tanpa melonjak
+// melewati nilai tertinggi/terendah, jadi hasilnya alami seperti grafik harga pada umumnya.
+const buildSmoothPath = (pts) => {
+  const n = pts.length;
+  if (n === 0) return '';
+  if (n === 1) return `M ${pts[0].x} ${pts[0].y}`;
+
+  const dx = [];
+  const m = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx[i] = pts[i + 1].x - pts[i].x || 1;
+    m[i] = (pts[i + 1].y - pts[i].y) / dx[i];
+  }
+
+  const t = new Array(n);
+  t[0] = m[0];
+  t[n - 1] = m[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    t[i] = m[i - 1] * m[i] <= 0 ? 0 : (m[i - 1] + m[i]) / 2;
+  }
+  for (let i = 0; i < n - 1; i++) {
+    if (m[i] === 0) {
+      t[i] = 0;
+      t[i + 1] = 0;
+      continue;
+    }
+    const a = t[i] / m[i];
+    const b = t[i + 1] / m[i];
+    const sum = a * a + b * b;
+    if (sum > 9) {
+      const tau = 3 / Math.sqrt(sum);
+      t[i] = tau * a * m[i];
+      t[i + 1] = tau * b * m[i];
+    }
+  }
+
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d += ` C ${pts[i].x + h} ${pts[i].y + t[i] * h}, ${pts[i + 1].x - h} ${pts[i + 1].y - t[i + 1] * h}, ${pts[i + 1].x} ${pts[i + 1].y}`;
+  }
+  return d;
+};
+
 // === KOMPONEN GRAFIK TREN HARGA (SVG Dynamic Chart) ===
 function CommodityChart({ history, isDarkMode, unit }) {
+  // Ukur lebar kontainer dalam piksel CSS. Grafik digambar 1:1 dengan lebar itu (tinggi tetap),
+  // jadi saat browser di-zoom (Ctrl +/-) teks & titik ikut membesar/mengecil seperti elemen lain,
+  // bukan ikut "melar" mengikuti lebar layar.
+  const containerRef = useRef(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setContainerWidth(Math.floor(el.getBoundingClientRect().width));
+    update();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [Boolean(history && history.length)]);
+
   const chartData = history ? [...history].reverse() : [];
   
   if (!chartData || chartData.length === 0) {
@@ -32,7 +111,23 @@ function CommodityChart({ history, isDarkMode, unit }) {
     );
   }
 
-  const prices = chartData.map((d) => d.price);
+  // Satu titik per bulan = rata-rata harga bulan itu (data diurutkan lama -> baru).
+  const monthlyData = [];
+  const monthIndex = {};
+  chartData.forEach((d) => {
+    const t = dateValue(d.date);
+    const key = t ? `${new Date(t).getFullYear()}-${new Date(t).getMonth()}` : String(d.date);
+    if (monthIndex[key] === undefined) {
+      monthIndex[key] = monthlyData.length;
+      monthlyData.push({ date: d.date, sum: 0, count: 0 });
+    }
+    const bucket = monthlyData[monthIndex[key]];
+    bucket.sum += Number(d.price) || 0;
+    bucket.count += 1;
+  });
+  const monthlyPoints = monthlyData.map((b) => ({ date: b.date, price: b.sum / b.count }));
+
+  const prices = monthlyPoints.map((d) => d.price);
   const minPrice = Math.min(...prices);
   const maxPrice = Math.max(...prices);
   
@@ -41,29 +136,19 @@ function CommodityChart({ history, isDarkMode, unit }) {
   const yMin = minPrice - padding;
   const yMax = maxPrice + padding;
 
-  const width = 800;
+  const width = Math.max(containerWidth || 800, 320);
   const height = 320;
   const margin = { top: 40, right: 30, bottom: 70, left: 60 };
   const chartWidth = width - margin.left - margin.right;
   const chartHeight = height - margin.top - margin.bottom;
 
-  const points = chartData.map((d, index) => {
-    const x = margin.left + (index / (chartData.length - 1 || 1)) * chartWidth;
+  const points = monthlyPoints.map((d, index) => {
+    const x = margin.left + (index / (monthlyPoints.length - 1 || 1)) * chartWidth;
     const y = margin.top + chartHeight - ((d.price - yMin) / (yMax - yMin)) * chartHeight;
     return { x, y, ...d };
   });
 
-  let pathD = points.length > 0 ? `M ${points[0].x} ${points[0].y}` : '';
-  for (let i = 0; i < points.length - 1; i++) {
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const cp1x = p1.x + (p2.x - p1.x) / 2;
-    const cp1y = p1.y;
-    const cp2x = p1.x + (p2.x - p1.x) / 2;
-    const cp2y = p2.y;
-    
-    pathD += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
-  }
+  const pathD = buildSmoothPath(points);
 
   const areaD = `${pathD} L ${points[points.length - 1].x} ${margin.top + chartHeight} L ${points[0].x} ${margin.top + chartHeight} Z`;
 
@@ -72,22 +157,37 @@ function CommodityChart({ history, isDarkMode, unit }) {
     yTicks.push(yMin + (yMax - yMin) * (i / 4));
   }
 
-  const isDense = points.length > 30;
+  // Padat = jarak antar titik kurang dari ~8px (bukan lagi sekadar jumlah titik)
+  const isDense = chartWidth / Math.max(points.length - 1, 1) < 8;
   const circleRadius = isDense ? 2 : 5;
 
-  // Ambil label tanggal secara merata by index (bukan modulo) supaya tidak bertindihan,
-  // lalu ditampilkan miring supaya tetap muat walau jaraknya rapat.
-  const maxLabels = Math.min(points.length, isDense ? 8 : 6);
+  // Label sumbu X = bulan & tahun saja ("Feb 26"). Diambil dari titik pertama tiap bulan,
+  // lalu dijarangkan merata kalau terlalu banyak untuk lebar grafik.
+  const monthKey = (d) => {
+    const t = dateValue(d);
+    if (!t) return String(d);
+    const dt = new Date(t);
+    return `${dt.getFullYear()}-${dt.getMonth()}`;
+  };
+  const firstOfMonth = [];
+  points.forEach((p, i) => {
+    if (i === 0 || monthKey(p.date) !== monthKey(points[i - 1].date)) firstOfMonth.push(i);
+  });
+  const maxLabels = Math.max(2, Math.floor(chartWidth / 70));
   const labelIndexSet = new Set();
-  for (let i = 0; i < maxLabels; i++) {
-    const idx = Math.round((i / (maxLabels - 1 || 1)) * (points.length - 1));
-    labelIndexSet.add(idx);
+  if (firstOfMonth.length <= maxLabels) {
+    firstOfMonth.forEach((i) => labelIndexSet.add(i));
+  } else {
+    for (let k = 0; k < maxLabels; k++) {
+      const pos = Math.round((k / (maxLabels - 1)) * (firstOfMonth.length - 1));
+      labelIndexSet.add(firstOfMonth[pos]);
+    }
   }
 
   return (
     <div className="w-full flex flex-col">
-      <div className="relative w-full overflow-hidden">
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
+      <div ref={containerRef} className="relative w-full overflow-hidden">
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="block overflow-visible">
           <defs>
             <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#E31837" stopOpacity="0.35" />
@@ -136,7 +236,7 @@ function CommodityChart({ history, isDarkMode, unit }) {
                 fill={isDarkMode ? '#94A3B8' : '#64748B'}
                 transform={`rotate(-35, ${p.x}, ${labelY})`}
               >
-                {formatDisplayDate(p.date)}
+                {formatMonthYear(p.date)}
               </text>
             );
           })}
@@ -155,7 +255,7 @@ function CommodityChart({ history, isDarkMode, unit }) {
                 fill={isDarkMode ? '#F8FAFC' : '#1E293B'} 
                 className="opacity-0 group-hover:opacity-100 transition-opacity"
               >
-                {p.price}
+                {Number(p.price).toFixed(2)}
               </text>
               <circle
                 cx={p.x}
@@ -171,6 +271,67 @@ function CommodityChart({ history, isDarkMode, unit }) {
     </div>
   );
 }
+
+// === KONFIGURASI API ===
+// Alamat server diambil dari api.config (sama seperti halaman Analytics), jadi kalau alamat
+// backend berubah cukup ubah di satu tempat. Rute Market Price memakai bentuk jamak
+// "/api/market-prices" (sesuai backend yang sudah dipakai sebelumnya).
+// Rute dicoba berurutan: jamak dulu, lalu tunggal (sesuai entri MARKET_PRICE di api.config).
+// Rute yang tidak menghasilkan 404 dipakai untuk semua permintaan berikutnya (GET/POST/DELETE).
+const MARKET_PRICES_PATHS = ['/api/market-prices', '/api/market-price'];
+
+// fetch dengan batas waktu, supaya tidak menggantung selamanya kalau server tidak terjangkau
+const fetchWithTimeout = async (url, options = {}, ms = 8000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+// Ubah tanggal jadi "YYYY-MM-DD" berdasarkan zona waktu LOKAL.
+// (toISOString() memakai UTC sehingga tanggal bisa mundur 1 hari di WIB.)
+const toLocalYMD = (dateInput) => {
+  const pad = (n) => String(n).padStart(2, '0');
+  const fromDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const today = () => fromDate(new Date());
+
+  if (!dateInput) return today();
+  if (dateInput instanceof Date) return isNaN(dateInput) ? today() : fromDate(dateInput);
+  if (typeof dateInput === 'number') {
+    return fromDate(new Date(Math.round((dateInput - 25569) * 86400 * 1000)));
+  }
+  if (typeof dateInput === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateInput)) {
+      const [dd, mm, yyyy] = dateInput.split('/');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+    const d = new Date(dateInput);
+    if (!isNaN(d)) return fromDate(d);
+  }
+  return today();
+};
+
+// Ubah nilai "change" dari Excel (0.0123 atau "1.23%") menjadi angka persen (1.23).
+const toPercentNumber = (val) => {
+  if (typeof val === 'number') return parseFloat((val * 100).toFixed(2));
+  if (typeof val === 'string') return parseFloat(val.replace('%', '').replace(/,/g, '')) || 0;
+  return 0;
+};
+
+// Tanggal urutan terbaru -> terlama (history di UI diasumsikan terbaru di index 0)
+const dateValue = (d) => {
+  if (!d) return 0;
+  if (typeof d === 'string' && /^\d{2}\/\d{2}\/\d{4}$/.test(d)) {
+    const [dd, mm, yyyy] = d.split('/');
+    return new Date(`${yyyy}-${mm}-${dd}`).getTime();
+  }
+  const t = new Date(d).getTime();
+  return isNaN(t) ? 0 : t;
+};
 
 // === TEMPLATE KOSONG ===
 const emptyCommodities = {
@@ -245,8 +406,9 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
   const { user } = useRole();
   const isAdmin = user?.role_id === 1;
   
-  // Endpoint API 
-  const API_URL = 'http://idws-n26010:5000/api/market-prices';
+  // Endpoint API (dari api.config)
+  const apiUrlRef = useRef(null);
+  const getApiUrl = () => apiUrlRef.current || `${API_BASE_URL}${MARKET_PRICES_PATHS[0]}`;
   
   // === UI & PROFILE STATE ===
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -260,40 +422,70 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
 
   const [showResetModal, setShowResetModal] = useState(false);
   const [commodities, setCommodities] = useState(emptyCommodities);
+  const [loadError, setLoadError] = useState('');
+  const [uploadStatus, setUploadStatus] = useState('');
 
   // FETCH DATA DARI BACKEND SAAT KOMPONEN DIMUAT
   useEffect(() => {
     const fetchMarketData = async () => {
       try {
-        const response = await fetch(API_URL);
-        if (response.ok) {
+        let response = null;
+        for (const path of MARKET_PRICES_PATHS) {
+          const url = `${API_BASE_URL}${path}`;
+          response = await fetchWithTimeout(url);
+          if (response.status !== 404) {
+            apiUrlRef.current = url;
+            break;
+          }
+        }
+        if (!response.ok) {
+          setLoadError(
+            response.status === 404
+              ? `Rute data harga tidak ditemukan di server (404). Sudah dicoba: ${MARKET_PRICES_PATHS.map(p => API_BASE_URL + p).join(' dan ')}. Pastikan rutenya ada di backend dan backend sudah di-restart.`
+              : `Server merespons dengan status ${response.status}.`
+          );
+          return;
+        }
+        setLoadError('');
+        {
           const dbData = await response.json();
           
           if (Array.isArray(dbData) && dbData.length > 0) {
             let updatedCommodities = JSON.parse(JSON.stringify(emptyCommodities));
             
-            dbData.forEach(row => {
+            // Urutkan terbaru -> terlama supaya history[0] selalu data terbaru
+            // (grafik & harga terkini bergantung pada urutan ini).
+            const sortedRows = [...dbData].sort((a, b) => dateValue(b.recorded_date) - dateValue(a.recorded_date));
+            
+            sortedRows.forEach(row => {
               const key = row.item_name;
-              if (updatedCommodities[key]) {
-                const changeStr = row.change_percent ? (row.change_percent > 0 ? `+${row.change_percent}%` : `${row.change_percent}%`) : '0.00%';
-                
-                updatedCommodities[key].history.push({
-                  date: row.recorded_date,
-                  price: row.price,
-                  open: row.open || 0,
-                  high: row.high || 0,
-                  low: row.low || 0,
-                  vol: row.vol || '0',
-                  change: changeStr
-                });
+              const item = updatedCommodities[key];
+              if (!item) return;
 
-                updatedCommodities[key].currentPrice = row.price;
-                updatedCommodities[key].change = changeStr;
-                updatedCommodities[key].isPositive = parseFloat(row.change_percent) >= 0;
-                if(row.open) updatedCommodities[key].open = row.open;
-                if(row.high) updatedCommodities[key].high = row.high;
-                if(row.low) updatedCommodities[key].low = row.low;
-                if(row.vol) updatedCommodities[key].vol = row.vol;
+              const pct = parseFloat(row.change_percent) || 0;
+              const changeStr = pct === 0 ? '0.00%' : pct > 0 ? `+${pct}%` : `${pct}%`;
+
+              // Baris pertama per komoditas = data terbaru -> jadi harga terkini.
+              const isLatest = item.history.length === 0;
+
+              item.history.push({
+                date: row.recorded_date,
+                price: Number(row.price) || 0,
+                open: Number(row.open) || 0,
+                high: Number(row.high) || 0,
+                low: Number(row.low) || 0,
+                vol: row.vol || '0',
+                change: changeStr
+              });
+
+              if (isLatest) {
+                item.currentPrice = Number(row.price) || 0;
+                item.change = changeStr;
+                item.isPositive = pct >= 0;
+                item.open = Number(row.open) || 0;
+                item.high = Number(row.high) || 0;
+                item.low = Number(row.low) || 0;
+                item.vol = row.vol || '0';
               }
             });
             setCommodities(updatedCommodities);
@@ -303,6 +495,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
         }
       } catch (error) {
         console.error("Gagal mengambil data dari API:", error);
+        setLoadError(`Tidak bisa terhubung ke server data (${API_BASE_URL}). Pastikan backend menyala dan bisa diakses dari laptop ini.`);
       }
     };
     
@@ -391,18 +584,36 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
           }
         }));
         
-        data.forEach(row => {
-          const changePercent = parseFloat(row.change || row.Change || row['Change %'] || row['Perubahan%']) || 0;
-          const recordedDate = row.date || row.Date || row['Tanggal'] || new Date().toISOString().split('T')[0];
-          
-          saveMarketPriceToBackend({
-            item_name: selectedKey,
-            price: parseNumber(row.price || row.Price || row['Terakhir']),
-            unit: 'USD',
-            change_percent: changePercent,
-            recorded_date: recordedDate
-          });
-        });
+        // Simpan SEMUA baris ke backend supaya laptop lain juga melihat data yang sama.
+        const targetKey = selectedKey;
+        const rowsToSave = data.map(row => ({
+          item_name: targetKey,
+          price: parseNumber(row.price || row.Price || row['Terakhir']),
+          open: parseNumber(row.open || row.Open || row['Pembukaan']),
+          high: parseNumber(row.high || row.High || row['Tertinggi']),
+          low: parseNumber(row.low || row.Low || row['Terendah']),
+          vol: String(row.vol || row.Volume || row['Vol.'] || '0'),
+          unit: 'USD',
+          change_percent: toPercentNumber(row.change || row.Change || row['Change %'] || row['Perubahan%']),
+          recorded_date: toLocalYMD(row.date || row.Date || row['Tanggal'])
+        }));
+
+        (async () => {
+          setUploadStatus(`Menyimpan ${rowsToSave.length} baris ke server...`);
+          let failed = 0;
+          const batchSize = 10;
+          for (let i = 0; i < rowsToSave.length; i += batchSize) {
+            const results = await Promise.all(
+              rowsToSave.slice(i, i + batchSize).map(r => saveMarketPriceToBackend(r))
+            );
+            failed += results.filter(ok => !ok).length;
+          }
+          setUploadStatus(
+            failed === 0
+              ? `Berhasil menyimpan ${rowsToSave.length} baris ke server.`
+              : `${failed} dari ${rowsToSave.length} baris gagal disimpan ke server. Data hanya terlihat di laptop ini sampai penyimpanan berhasil.`
+          );
+        })();
       }
     };
     reader.readAsBinaryString(file);
@@ -411,32 +622,22 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
 
   const saveMarketPriceToBackend = async (priceData) => {
     try {
-      const formatDateToYYYYMMDD = (dateInput) => {
-        if (!dateInput) return new Date().toISOString().split('T')[0];
-        if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
-        if (typeof dateInput === 'string' && dateInput.includes('T')) return dateInput.split('T')[0];
-        if (dateInput instanceof Date) return dateInput.toISOString().split('T')[0];
-        if (typeof dateInput === 'string') {
-          const date = new Date(dateInput);
-          if (!isNaN(date)) return date.toISOString().split('T')[0];
-        }
-        return new Date().toISOString().split('T')[0];
-      };
-
-      const response = await fetch(API_URL, {
+      const response = await fetchWithTimeout(getApiUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           item_name: priceData.item_name || 'Unknown',
           price: priceData.price || 0,
+          open: priceData.open || 0,
+          high: priceData.high || 0,
+          low: priceData.low || 0,
+          vol: priceData.vol || '0',
           unit: priceData.unit || 'USD',
           change_percent: priceData.change_percent || 0,
-          recorded_date: formatDateToYYYYMMDD(priceData.recorded_date)
+          recorded_date: toLocalYMD(priceData.recorded_date)
         })
       });
-
-      if (!response.ok) return false;
-      return true;
+      return response.ok;
     } catch (error) {
       console.error('❌ Error saat POST ke backend:', error);
       return false;
@@ -457,8 +658,6 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
     const latestTime = Math.max(...history.map(h => parseDate(h.date)));
     
     const filterDuration = {
-      '1W': 7 * 24 * 60 * 60 * 1000,
-      '1M': 30 * 24 * 60 * 60 * 1000,
       '6M': 180 * 24 * 60 * 60 * 1000,
       '1Y': 365 * 24 * 60 * 60 * 1000,
     }[timeFilter];
@@ -476,13 +675,21 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
 
   const confirmResetData = async () => {
     try {
-      await fetch(API_URL, {
-        method: 'DELETE'
-      });
+      const response = await fetchWithTimeout(getApiUrl(), { method: 'DELETE' });
+      if (!response.ok) {
+        setShowResetModal(false);
+        setLoadError(`Gagal menghapus data di server (status ${response.status}). Data belum dihapus.`);
+        return;
+      }
     } catch (error) {
       console.error("Gagal menghapus data di API:", error);
+      setShowResetModal(false);
+      setLoadError('Gagal menghapus data: server tidak terjangkau. Data belum dihapus.');
+      return;
     }
-    
+
+    setLoadError('');
+    setUploadStatus('');
     setCommodities(emptyCommodities);
     setShowResetModal(false);
   };
@@ -526,6 +733,17 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
           </div>
         </div>
 
+        {loadError && (
+          <div className={`px-4 py-3 rounded-lg text-sm border ${isDarkMode ? 'bg-red-950/60 border-red-800 text-red-300' : 'bg-red-50 border-red-200 text-red-700'}`}>
+            {loadError}
+          </div>
+        )}
+        {uploadStatus && (
+          <div className={`px-4 py-3 rounded-lg text-sm border ${isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-300' : 'bg-blue-50 border-blue-200 text-blue-800'}`}>
+            {uploadStatus}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
           {Object.keys(commodities).map((key) => {
             const item = commodities[key];
@@ -563,7 +781,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
             </div>
             <div className="flex items-center gap-3">
               <span className={`text-2xl font-extrabold ${isDarkMode ? 'text-white' : 'text-[#004797]'}`}>
-                {activeItem?.currentPrice === 0 ? '0' : activeItem?.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.unit}</span>
+                {!activeItem?.currentPrice ? '-' : activeItem.currentPrice.toLocaleString('en-US')} <span className={`text-xs font-normal ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{activeItem?.unit}</span>
               </span>
               {activeItem?.currentPrice !== 0 && (
                 <span className={`px-2.5 py-1 text-xs font-bold rounded-full ${activeItem?.isPositive ? (isDarkMode ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950/80 text-red-400 border border-red-800' : 'bg-red-100 text-red-700')}`}>
@@ -578,7 +796,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
               <h3 className={`text-sm font-bold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Price Movement Trend</h3>
               
               <div className="flex items-center gap-1.5 p-1 rounded-lg border shadow-sm select-none" style={{ backgroundColor: isDarkMode ? '#0F172A' : '#F3F4F6', borderColor: isDarkMode ? '#334155' : '#E5E7EB' }}>
-                {['1W', '1M', '6M', '1Y', 'All'].map(filterOption => (
+                {['6M', '1Y', 'All'].map(filterOption => (
                   <button 
                     key={filterOption}
                     onClick={() => setTimeFilter(filterOption)}
@@ -590,7 +808,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
                           : 'text-gray-500 hover:text-gray-800 hover:bg-white'
                     }`}
                   >
-                    {filterOption === '1W' ? '1 Week' : filterOption === '1M' ? '1 Month' : filterOption === '6M' ? '6 Months' : filterOption === '1Y' ? '1 Year' : 'All'}
+                    {filterOption === '6M' ? '6 Months' : filterOption === '1Y' ? '1 Year' : 'All'}
                   </button>
                 ))}
               </div>
@@ -613,7 +831,7 @@ export default function MarketPrice({ changePage, onLogout, activePage = 'market
             </div>
             <div>
               <span className={`text-xs block ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Trading Volume</span>
-              <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.vol || '-'}</span>
+              <span className={`text-base font-semibold ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>{activeItem?.vol && activeItem.vol !== '0' ? activeItem.vol : '-'}</span>
             </div>
           </div>
         </div>

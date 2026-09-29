@@ -21,6 +21,11 @@ const getKurs = (year) => {
   return KURS_PER_TAHUN[nearest];
 };
 
+// Filter tahun Dashboard disimpan di variabel level modul (di luar komponen), bukan localStorage:
+// tetap sama saat pindah ke halaman lain lalu kembali, dan kembali ke 'All' kalau halaman di-refresh / browser ditutup.
+const DEFAULT_YEAR_BY_TAB = { overview: 'All', category: 'All', supplier: 'All' };
+let dashboardYearByTab = { ...DEFAULT_YEAR_BY_TAB };
+
 export default function Dashboard({ changePage, activePage = 'dashboard', onLogout }) {
   // === 1. STATE MANAGEMENT ===
   const [orders, setOrders] = useState([]);
@@ -39,7 +44,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return target || 'overview';
   });
   // Filter tahun terpisah per tab: mengganti tahun di satu tab tidak mengubah tab lain
-  const [yearByTab, setYearByTab] = useState({ overview: 'All', category: 'All', supplier: 'All' });
+  const [yearByTab, setYearByTab] = useState(() => dashboardYearByTab);
+  useEffect(() => { dashboardYearByTab = yearByTab; }, [yearByTab]);
   const selectedYear = yearByTab[activeTab] ?? 'All';
   const setSelectedYear = (value) => setYearByTab((prev) => ({ ...prev, [activeTab]: value }));
   const [hoveredCategorySlice, setHoveredCategorySlice] = useState(null);
@@ -81,9 +87,40 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const [pieCategoryFilter, setPieCategoryFilter] = useState(null);
   const [originFilter, setOriginFilter] = useState(null); // 'Import' | 'Local' | null (klik slice di Total Spend by Origin)
 
+  // Slice utama (Direct / Indirect) yang diklik di pie "Total Spend by Category" -> sub-kategorinya tampil sebagai popup
+  const [subPopupGroup, setSubPopupGroup] = useState(null);
+  useEffect(() => { setSubPopupGroup(null); }, [selectedYear, pieCategoryFilter, originFilter]);
+  useEffect(() => {
+    if (!subPopupGroup) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setSubPopupGroup(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [subPopupGroup]);
+
+  // Slice Import / Local yang diklik di pie "Total Spend by Origin" -> datanya tampil sebagai popup
+  const [originPopup, setOriginPopup] = useState(null);
+  useEffect(() => { setOriginPopup(null); }, [selectedYear, pieCategoryFilter]);
+  useEffect(() => {
+    if (!originPopup) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setOriginPopup(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [originPopup]);
+
+  // Slice Import / Local yang diklik di pie "Total Spend by Origin" pada tab Supplier -> popup datanya
+  const [supplierOriginPopup, setSupplierOriginPopup] = useState(null);
+  useEffect(() => { setSupplierOriginPopup(null); }, [selectedYear, supplierCategoryGroup]);
+  useEffect(() => {
+    if (!supplierOriginPopup) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setSupplierOriginPopup(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [supplierOriginPopup]);
+
   // Klik kategori di box "Total Spend Direct & Indirect": buka Top 20 item kategori itu (seperti sebelumnya)
   // SEKALIGUS filter pie chart Category & Origin. Klik kategori yang sama lagi = toggle off (reset semua).
   const selectCategoryFilter = (catName) => {
+    setSubPopupGroup(null);
     if (pieCategoryFilter === catName) {
       setBarChartGroup(null);
       setCategoryChartView('bar');
@@ -98,6 +135,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   };
 
   const resetCategoryFilter = () => {
+    setSubPopupGroup(null);
     setBarChartGroup(null);
     setCategoryChartView('bar');
     setPieCategoryFilter(null);
@@ -146,6 +184,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         totalUsd: usd === undefined || usd === null ? null : Number(usd),
         status: po.status || po.order_status || 'Pending',
         category: [po.category, po.product_group, po.productGroup].find((v) => v && String(v) !== '0') || 'Other',
+        subcategory: [po.subcategory, po.sub_category, po.subCategory].find((v) => v && String(v) !== '0') || null,
         origin: po.local_import || po.localImport || po.origin || '',
         notes: po.description || po.notes || '',
         description: po.description || po.notes || '',
@@ -233,6 +272,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
   const getOrderDate = (order) => order.date || order.tanggal || order.orderDate || order.tanggalPesanan || '-';
   const getOrderCategory = (order) => order.category || order.kategori || order.categoryName || 'Other';
+  const getOrderSubcategory = (order) => order.subcategory || order.sub_category || order.subCategory || 'General';
   const getOrderItemName = (order) => {
     const desc = String(order.description || order.notes || '').replace(/\s+/g, ' ').trim();
     if (desc) return desc;
@@ -343,6 +383,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   // === BAR CHART DATA (DIRECT VS INDIRECT / DRILL-DOWN) ===
   const barChartData = useMemo(() => {
     const catMap = {};
+    const detailMap = {}; // baris detail (PO) per item, untuk popup saat bar Pareto diklik
+    const pushDetail = (name, row) => {
+      if (!detailMap[name]) detailMap[name] = [];
+      detailMap[name].push(row);
+    };
     let maxVal = 0;
     const scopedOrders = originFilter
       ? yearFilteredOrders.filter((order) => getOriginBucket(order) === originFilter)
@@ -370,11 +415,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
               if (typeof p === 'string') p = parseFloat(p.replace(/[^0-9]/g, '')) || 0;
               const cost = q * p;
               catMap[name] = (catMap[name] || 0) + cost;
+              pushDetail(name, { po: getPoNumber(order), date: getOrderDate(order), supplier: getOrderSupplier(order), status: getOrderStatus(order), qty: Number.isFinite(q) ? q : null, cost });
             });
           } else {
             const name = getOrderItemName(order);
             const cost = getOrderTotal(order);
             catMap[name] = (catMap[name] || 0) + cost;
+            pushDetail(name, { po: getPoNumber(order), date: getOrderDate(order), supplier: getOrderSupplier(order), status: getOrderStatus(order), qty: null, cost });
           }
         }
       });
@@ -386,7 +433,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       .slice(0, 20)
       .map(catName => ({
         name: catName,
-        value: catMap[catName]
+        value: catMap[catName],
+        rows: [...(detailMap[catName] || [])].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
       }));
     
     const currentMax = categories.length > 0 ? categories[0].value : 1;
@@ -408,41 +456,18 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       .map(([name, total]) => ({ name, total }));
   }, [yearFilteredOrders]);
 
-  // Data mini-chart (sparkline) & tren untuk box kategori di bagian atas.
-  // Tahun dipilih -> titik per bulan; "All" -> titik per tahun.
-  const categorySparkData = useMemo(() => {
-    const isAll = selectedYear === 'All';
-    const buckets = {};
-    const keys = new Set();
-    yearFilteredOrders.forEach((order) => {
-      const dateStr = getOrderDate(order);
-      if (!dateStr || dateStr === '-') return;
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return;
-      const key = isAll ? String(d.getFullYear()) : String(d.getMonth()).padStart(2, '0');
-      const cat = getOrderCategory(order) || 'Other';
-      keys.add(key);
-      if (!buckets[cat]) buckets[cat] = {};
-      buckets[cat][key] = (buckets[cat][key] || 0) + getOrderTotal(order);
-    });
-    const sortedKeys = Array.from(keys).sort();
-    const result = {};
-    Object.keys(buckets).forEach((cat) => {
-      const series = sortedKeys.map((k) => buckets[cat][k] || 0);
-      const nonZero = series.filter((v) => v > 0);
-      let trend = null;
-      if (nonZero.length >= 2) {
-        const last = nonZero[nonZero.length - 1];
-        const prev = nonZero[nonZero.length - 2];
-        trend = last >= prev ? 'up' : 'down';
-      }
-      result[cat] = { series, trend };
-    });
-    return result;
-  }, [yearFilteredOrders, selectedYear]);
-
   // DATA PARETO CATEGORY
   const [categoryChartView, setCategoryChartView] = useState('bar');
+
+  // Item Pareto yang diklik -> detailnya tampil sebagai popup
+  const [paretoDetailName, setParetoDetailName] = useState(null);
+  useEffect(() => { setParetoDetailName(null); }, [barChartGroup, originFilter, selectedYear]);
+  useEffect(() => {
+    if (!paretoDetailName) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setParetoDetailName(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [paretoDetailName]);
 
   const categoryParetoData = useMemo(() => {
     const { categories: top10Categories } = barChartData;
@@ -456,6 +481,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       return {
         name: cat.name,
         totalCost: cat.value,
+        rows: cat.rows || [],
         cumCost: runningSum,
         indPercent: parseFloat(indPercent.toFixed(1)),
         cumPercent: Math.min(Math.round(cumPercent), 100)
@@ -880,8 +906,19 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     return { months, monthlyTotals, monthlyOrders, maxVal, maxOrders };
   }, [yearFilteredOrders]);
 
+  // Supplier Pareto yang diklik -> detail PO-nya tampil sebagai popup (sama seperti Pareto di Spend by Category)
+  const [supplierDetailName, setSupplierDetailName] = useState(null);
+  useEffect(() => { setSupplierDetailName(null); }, [supplierCategoryGroup, supplierOriginFilter, supplierParetoTab, selectedYear]);
+  useEffect(() => {
+    if (!supplierDetailName) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setSupplierDetailName(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [supplierDetailName]);
+
   const paretoSupplierData = useMemo(() => {
     const supMap = {};
+    const supRows = {}; // baris detail (PO) per supplier, untuk popup saat bar diklik
     let grandTotalSpend = 0;
 
     const baseOrders = (supplierCategoryGroup
@@ -895,11 +932,24 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       if (sup && sup !== '-') {
         supMap[sup] = (supMap[sup] || 0) + cost;
         grandTotalSpend += cost;
+        if (!supRows[sup]) supRows[sup] = [];
+        supRows[sup].push({
+          po: getPoNumber(order),
+          date: getOrderDate(order),
+          category: getOrderCategory(order) || 'Other',
+          origin: getOriginBucket(order),
+          status: getOrderStatus(order),
+          cost
+        });
       }
     });
 
     const sortedDesc = Object.keys(supMap)
-      .map((supName) => ({ name: supName, totalCost: supMap[supName] }))
+      .map((supName) => ({
+        name: supName,
+        totalCost: supMap[supName],
+        rows: [...(supRows[supName] || [])].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+      }))
       .sort((a, b) => b.totalCost - a.totalCost);
 
     let selected = [];
@@ -951,6 +1001,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       }));
     return { categories, grandTotal };
   }, [yearFilteredOrders, supplierCategoryGroup]);
+
+  // Kalau origin yang sedang jadi filter Top 20 Supplier sudah tidak punya spend (ganti tahun/kategori), lepas filternya
+  useEffect(() => {
+    if (supplierOriginFilter && !supplierOriginPieData.categories.some((c) => c.name === supplierOriginFilter)) {
+      setSupplierOriginFilter(null);
+    }
+  }, [supplierOriginPieData, supplierOriginFilter]);
 
   const filteredOrders = useMemo(() => {
     if (selectedCategory === 'All') return yearFilteredOrders;
@@ -1030,7 +1087,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         const normCat = normalizeCategory(getOrderCategory(order));
         if (getParentCategory(normCat) === selectedGroup) {
           const cost = getOrderTotal(order);
-          catMap[normCat] = (catMap[normCat] || 0) + cost;
+          const subKey = pieCategoryFilter ? getOrderSubcategory(order) : normCat;
+          catMap[subKey] = (catMap[subKey] || 0) + cost;
           grandTotal += cost;
         }
       });
@@ -1449,11 +1507,107 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
   const renderDrilldownPieChart = () => {
     const { categories, grandTotal } = pieChartData;
 
+    // Klik slice utama -> buka popup sub-kategori (tombol di popup masih bisa drill-down di dalam chart)
     const handleSliceClick = (sliceName) => {
-      if (drillLevel === 0) {
-        setSelectedGroup(sliceName);
-        setDrillLevel(1);
-      }
+      if (drillLevel === 0) setSubPopupGroup(sliceName);
+    };
+
+    const renderSubCategoryPopup = () => {
+      if (!subPopupGroup || drillLevel !== 0) return null;
+      const groupSlice = categories.find((c) => c.name === subPopupGroup);
+      if (!groupSlice) return null;
+
+      // Sumber data sama persis dengan pie (ikut filter tahun, kategori, dan origin)
+      const baseOrders = (pieCategoryFilter
+        ? yearFilteredOrders.filter((order) => getOrderCategory(order) === pieCategoryFilter)
+        : yearFilteredOrders
+      ).filter((order) => !originFilter || getOriginBucket(order) === originFilter);
+
+      const subMap = {};
+      baseOrders.forEach((order) => {
+        const normCat = normalizeCategory(getOrderCategory(order));
+        if (getParentCategory(normCat) !== subPopupGroup) return;
+        // Setelah box filter dipilih: sub-category = subcategory di dalam kategori itu; tanpa filter: pecahan kategori utama
+        const subKey = pieCategoryFilter ? getOrderSubcategory(order) : normCat;
+        if (!subMap[subKey]) subMap[subKey] = { name: subKey, value: 0, pos: new Set(), lines: 0 };
+        subMap[subKey].value += getOrderTotal(order);
+        subMap[subKey].pos.add(getPoNumber(order));
+        subMap[subKey].lines += 1;
+      });
+      const groupTotal = Object.values(subMap).reduce((sum, r) => sum + r.value, 0);
+      const palette = ['#DC2626', '#2563EB', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#F97316', '#64748B', '#14B8A6'];
+      const subRows = Object.values(subMap)
+        .filter((r) => r.value > 0)
+        .sort((a, b) => b.value - a.value)
+        .map((r, i) => ({ ...r, poCount: r.pos.size, pct: groupTotal > 0 ? (r.value / groupTotal) * 100 : 0, color: palette[i % palette.length] }));
+      const maxVal = Math.max(...subRows.map((r) => r.value), 1);
+
+      return (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => setSubPopupGroup(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 rounded-2xl border shadow-2xl ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}
+          >
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="min-w-0">
+                <div className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                  Sub-categories{pieCategoryFilter ? ` of ${pieCategoryFilter}` : ''} • {selectedYear === 'All' ? 'All Time' : selectedYear}{originFilter ? ` • ${originFilter}` : ''}
+                </div>
+                <h3 className={`font-bold text-lg flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                  <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: groupSlice.color }}></span>
+                  {subPopupGroup}
+                </h3>
+              </div>
+              <button
+                onClick={() => setSubPopupGroup(null)}
+                className={`text-sm px-2 py-1 rounded-md cursor-pointer ${isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-gray-500 hover:bg-gray-100'}`}
+                aria-label="Close"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              {[
+                { label: 'Total Spend', value: formatUSDNoDecimal(groupSlice.value) },
+                { label: 'Share of Total', value: `${groupSlice.percentage}%` },
+                { label: 'Sub-categories', value: subRows.length }
+              ].map((st) => (
+                <div key={st.label} className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                  <div className={`text-[10px] uppercase font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{st.label}</div>
+                  <div className={`text-sm font-bold ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{st.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {subRows.map((r) => (
+                <div key={r.name}>
+                  <div className="flex items-center justify-between gap-3 text-xs mb-1">
+                    <span className={`font-semibold truncate ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`} title={r.name}>{r.name}</span>
+                    <span className={`shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                      <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSDNoDecimal(r.value)}</span>
+                      {' '}• {r.pct.toFixed(1)}% • {r.poCount} PO
+                    </span>
+                  </div>
+                  <div className={`h-2.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
+                    <div className="h-full rounded-full" style={{ width: `${(r.value / maxVal) * 100}%`, backgroundColor: r.color }}></div>
+                  </div>
+                </div>
+              ))}
+              {subRows.length === 0 && (
+                <p className={`py-4 text-center text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No sub-category data.</p>
+              )}
+            </div>
+
+          </div>
+        </div>
+      );
     };
 
     return (
@@ -1478,18 +1632,162 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
         </div>
         
         {renderCategoryPieChart(categories, grandTotal, handleSliceClick, drillLevel === 0)}
+        {renderSubCategoryPopup()}
+      </div>
+    );
+  };
+
+  // Popup detail Import / Local (dipakai tab Category & tab Supplier)
+  const renderOriginDetailPopup = ({ originName, slices, orders, contextLabel, onClose }) => {
+    if (!originName) return null;
+    const slice = slices.find((c) => c.name === originName);
+    if (!slice) return null;
+
+    const rows = orders.filter((o) => getOriginBucket(o) === originName);
+
+    const aggregate = (keyFn) => {
+      const map = {};
+      rows.forEach((o) => {
+        const key = keyFn(o) || '-';
+        if (!map[key]) map[key] = { name: key, value: 0, pos: new Set() };
+        map[key].value += getOrderTotal(o);
+        map[key].pos.add(getPoNumber(o));
+      });
+      return Object.values(map).filter((r) => r.value > 0).sort((a, b) => b.value - a.value)
+        .map((r) => ({ ...r, poCount: r.pos.size, pct: slice.value > 0 ? (r.value / slice.value) * 100 : 0 }));
+    };
+    const byCategory = aggregate((o) => getOrderCategory(o));
+    const bySupplier = aggregate((o) => getOrderSupplier(o)).slice(0, 5);
+    const maxCat = Math.max(...byCategory.map((r) => r.value), 1);
+    const poCount = new Set(rows.map((o) => getPoNumber(o))).size;
+    const supplierCount = new Set(rows.map((o) => getOrderSupplier(o))).size;
+    const avgPO = poCount > 0 ? slice.value / poCount : 0;
+    const stats = [
+      { label: 'Total Spend', value: formatUSDNoDecimal(slice.value) },
+      { label: 'Share of Total', value: `${slice.percentage}%` },
+      { label: 'Total PO', value: poCount.toLocaleString('en-US') },
+      { label: 'Avg PO Value', value: formatUSDNoDecimal(avgPO) },
+      { label: 'Suppliers', value: supplierCount.toLocaleString('en-US') },
+      { label: 'Categories', value: byCategory.length.toLocaleString('en-US') }
+    ];
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+        onClick={() => onClose()}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => e.stopPropagation()}
+          className={`w-full max-w-2xl max-h-[85vh] overflow-y-auto p-5 rounded-2xl border shadow-2xl ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}
+        >
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div className="min-w-0">
+              <div className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                Origin • {selectedYear === 'All' ? 'All Time' : selectedYear}{contextLabel ? ` • ${contextLabel}` : ''}
+              </div>
+              <h3 className={`font-bold text-lg flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: slice.color }}></span>
+                {originName}
+              </h3>
+            </div>
+            <button
+              onClick={() => onClose()}
+              className={`text-sm px-2 py-1 rounded-md cursor-pointer ${isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-gray-500 hover:bg-gray-100'}`}
+              aria-label="Close"
+            >
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
+            {stats.map((st) => (
+              <div key={st.label} className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                <div className={`text-[10px] uppercase font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{st.label}</div>
+                <div className={`text-sm font-bold ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{st.value}</div>
+              </div>
+            ))}
+          </div>
+
+          <h4 className={`text-xs font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Spend by Category</h4>
+          <div className="flex flex-col gap-3 mb-5">
+            {byCategory.map((r) => (
+              <div key={r.name}>
+                <div className="flex items-center justify-between gap-3 text-xs mb-1">
+                  <span className={`font-semibold truncate ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`} title={r.name}>{r.name}</span>
+                  <span className={`shrink-0 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatUSDNoDecimal(r.value)}</span>
+                    {' '}• {r.pct.toFixed(1)}% • {r.poCount} PO
+                  </span>
+                </div>
+                <div className={`h-2.5 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
+                  <div className="h-full rounded-full" style={{ width: `${(r.value / maxCat) * 100}%`, backgroundColor: slice.color }}></div>
+                </div>
+              </div>
+            ))}
+            {byCategory.length === 0 && (
+              <p className={`py-4 text-center text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No category data.</p>
+            )}
+          </div>
+
+          <h4 className={`text-xs font-bold uppercase tracking-wider mb-2 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Top Suppliers</h4>
+          <div className="overflow-x-auto">
+            <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+              <thead className={`uppercase border-b ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-200 text-gray-400'}`}>
+                <tr>
+                  <th className="py-2 pr-2 font-semibold">#</th>
+                  <th className="py-2 pr-2 font-semibold">Supplier</th>
+                  <th className="py-2 pr-2 font-semibold text-right">Total PO</th>
+                  <th className="py-2 pl-2 font-semibold text-right">Spend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bySupplier.map((r, i) => (
+                  <tr key={r.name} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                    <td className="py-2 pr-2">{i + 1}</td>
+                    <td className="py-2 pr-2 font-medium">{r.name}</td>
+                    <td className="py-2 pr-2 text-right">{r.poCount}</td>
+                    <td className="py-2 pl-2 text-right whitespace-nowrap font-semibold">{formatUSDNoDecimal(r.value)}</td>
+                  </tr>
+                ))}
+                {bySupplier.length === 0 && (
+                  <tr><td colSpan={4} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No supplier data.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     );
   };
 
   const renderOriginPieChart = () => {
     const { categories, grandTotal } = originPieChartData;
-    return renderGenericPieChart(
-      categories,
-      grandTotal,
-      (name) => setOriginFilter((prev) => (prev === name ? null : name)),
-      true,
-      originFilter
+
+    // Sumber data sama persis dengan pie Origin (ikut filter tahun, Direct/Indirect, dan kategori)
+    let base = (drillLevel === 1 && selectedGroup)
+      ? yearFilteredOrders.filter((o) => getParentCategory(normalizeCategory(getOrderCategory(o))) === selectedGroup)
+      : yearFilteredOrders;
+    if (pieCategoryFilter) base = base.filter((o) => getOrderCategory(o) === pieCategoryFilter);
+
+    return (
+      <>
+        {renderGenericPieChart(
+          categories,
+          grandTotal,
+          (name) => setOriginPopup(name),
+          true,
+          originPopup
+        )}
+        {renderOriginDetailPopup({
+          originName: originPopup,
+          slices: categories,
+          orders: base,
+          contextLabel: pieCategoryFilter || ((drillLevel === 1 && selectedGroup) ? selectedGroup : null),
+          onClose: () => setOriginPopup(null)
+        })}
+      </>
     );
   };
 
@@ -1512,11 +1810,6 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   : (isDarkMode ? 'bg-[#0F172A] border-slate-700 hover:border-red-500' : 'bg-gray-50 border-gray-200 hover:border-red-400')
               }`}
             >
-              {isSelected && (
-                <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center">
-                  <i className="fa-solid fa-filter"></i>
-                </span>
-              )}
               <span className={`text-sm font-bold uppercase tracking-wide ${isDarkMode ? 'text-slate-200' : 'text-gray-800'}`}>
                 {cat.name}
               </span>
@@ -1585,6 +1878,94 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
     );
   };
 
+  // Popup detail PO per supplier (dipakai chart Pareto dan kartu tunggal)
+  const renderSupplierDetailPopup = (items) => {
+          const idx = items.findIndex((it) => it.name === supplierDetailName);
+          if (idx === -1) return null;
+          const sel = items[idx];
+          const rows = sel.rows || [];
+          const isVital = idx === 0 || sel.cumPercent <= 80;
+          const stats = [
+            { label: 'Rank', value: `#${idx + 1} of ${items.length}` },
+            { label: 'Total Spend', value: formatUSD(sel.totalCost) },
+            { label: 'Share of Total', value: `${sel.indPercent}%` },
+            { label: 'Cumulative', value: `${sel.cumPercent}%` },
+            { label: 'Total PO', value: new Set(rows.map((r) => r.po)).size },
+            { label: 'Transactions', value: rows.length }
+          ];
+          return (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+              onClick={() => setSupplierDetailName(null)}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                onClick={(e) => e.stopPropagation()}
+                className={`w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 rounded-2xl border shadow-2xl ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}
+              >
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="min-w-0">
+                    <div className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                      {supplierParetoTab === 'lowest20' ? 'Lowest' : 'Top'} 20 Supplier{supplierCategoryGroup ? ` • ${supplierCategoryGroup}` : ''}{supplierOriginFilter ? ` • ${supplierOriginFilter}` : ''}
+                    </div>
+                    <h3 className={`font-bold text-base break-words ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{sel.name}</h3>
+                    <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${isVital ? (isDarkMode ? 'bg-blue-500/15 text-blue-400' : 'bg-blue-50 text-blue-600') : (isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600')}`}>
+                      {isVital ? 'Vital few (within 80%)' : 'Remaining suppliers'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setSupplierDetailName(null)}
+                    className={`text-sm px-2 py-1 rounded-md cursor-pointer ${isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-gray-500 hover:bg-gray-100'}`}
+                    aria-label="Close detail"
+                  >
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+                  {stats.map((st) => (
+                    <div key={st.label} className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                      <div className={`text-[10px] uppercase font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{st.label}</div>
+                      <div className={`text-sm font-bold ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{st.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-x-auto max-h-72 overflow-y-auto">
+                  <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                    <thead className={`uppercase border-b sticky top-0 ${isDarkMode ? 'border-slate-700 text-slate-500 bg-[#1E293B]' : 'border-gray-200 text-gray-400 bg-white'}`}>
+                      <tr>
+                        <th className="py-2 pr-2 font-semibold">PO Number</th>
+                        <th className="py-2 pr-2 font-semibold">Date</th>
+                        <th className="py-2 pr-2 font-semibold">Category</th>
+                        <th className="py-2 pr-2 font-semibold">Origin</th>
+                        <th className="py-2 pr-2 font-semibold text-right">Value</th>
+                        <th className="py-2 pl-2 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                          <td className="py-2 pr-2 font-medium">{r.po}</td>
+                          <td className="py-2 pr-2 whitespace-nowrap">{r.date && r.date !== '-' ? String(r.date).slice(0, 10) : '-'}</td>
+                          <td className="py-2 pr-2">{r.category}</td>
+                          <td className="py-2 pr-2">{r.origin}</td>
+                          <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(r.cost)}</td>
+                          <td className="py-2 pl-2">{r.status}</td>
+                        </tr>
+                      ))}
+                      {rows.length === 0 && (
+                        <tr><td colSpan={6} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No transaction data.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+  };
+
   const renderSupplierParetoChart = () => {
     const { items } = paretoSupplierData;
 
@@ -1607,11 +1988,12 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     const maxBarVal = Math.max(...items.map((d) => d.totalCost), 1);
     const numBars = items.length;
-    const step = chartW / numBars;
-    const barW = Math.max(step * 0.55, 12);
+    const step = Math.min(chartW / numBars, 90); // batasi jarak antar batang supaya item sedikit tidak melebar
+    const offsetX = (chartW - step * numBars) / 2; // kelompok batang diletakkan di tengah area chart
+    const barW = Math.min(Math.max(step * 0.5, 12), 40);
 
     const linePoints = items.map((item, i) => {
-      const cx = padLeft + (i + 0.5) * step;
+      const cx = padLeft + offsetX + (i + 0.5) * step;
       const cy = padTop + chartH - (item.cumPercent / 100) * chartH;
       return { cx, cy, percent: item.cumPercent, name: item.name };
     });
@@ -1622,11 +2004,11 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     return (
       <div className="w-full flex flex-col gap-6">
-        <div className="w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-8 flex flex-col items-center">
+        <div className="w-full grid grid-cols-1 lg:grid-cols-12 xl:grid-cols-1 gap-6 items-start">
+          <div className="lg:col-span-8 xl:col-span-1 min-w-0 flex flex-col items-center">
             <div className="w-full overflow-x-auto scrollbar-thin">
-              <div className="min-w-[650px] relative">
-                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto overflow-visible select-none">
+              <div className="min-w-[650px] xl:min-w-[440px] relative">
+                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} width={svgWidth} style={{ width: svgWidth, maxWidth: '100%', height: 'auto' }} className="block mx-auto overflow-visible select-none">
                   {[0, 20, 40, 60, 80, 100].map((pct) => {
                     const y = padTop + chartH - (pct / 100) * chartH;
                     return (
@@ -1678,13 +2060,15 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     CUMULATIVE PERCENTAGE (%)
                   </text>
                   {items.map((item, i) => {
-                    const cx = padLeft + (i + 0.5) * step;
+                    const cx = padLeft + offsetX + (i + 0.5) * step;
                     const xBar = cx - barW / 2;
                     const hBar = (item.totalCost / maxBarVal) * chartH;
                     const yBar = padTop + chartH - hBar;
 
                     return (
-                      <g key={i} className="group cursor-pointer">
+                      <g key={i} className="group cursor-pointer" onClick={() => setSupplierDetailName(item.name)}>
+                        {/* Area klik selebar kolom supaya bar kecil tetap mudah diklik */}
+                        <rect x={cx - step / 2} y={padTop} width={step} height={chartH + 60} fill="transparent" />
                         <rect
                           x={xBar}
                           y={yBar}
@@ -1695,7 +2079,9 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                           strokeWidth="1.5"
                           rx="3"
                           className="transition-all duration-300 group-hover:opacity-80"
-                        />
+                        >
+                          <title>{`${item.name}: ${formatUSD(item.totalCost)} (cumulative ${item.cumPercent}%) - click for details`}</title>
+                        </rect>
                         <text
                           x={cx}
                           y={padTop + chartH + 16}
@@ -1703,6 +2089,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                           transform={`rotate(-35, ${cx}, ${padTop + chartH + 16})`}
                           className={`text-[10px] font-semibold ${isDarkMode ? 'fill-slate-300' : 'fill-gray-700'}`}
                         >
+                          <title>{item.name}</title>
                           {item.name.length > 14 ? item.name.substring(0, 12) + '...' : item.name}
                         </text>
                       </g>
@@ -1741,7 +2128,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
           </div>
 
-          <div className="lg:col-span-4 w-full">
+          <div className="lg:col-span-4 xl:col-span-1 w-full min-w-0">
             <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'bg-[#0F172A] border-slate-800' : 'bg-gray-50 border-gray-200'}`}>
               <div className={`p-3 border-b font-bold text-xs uppercase tracking-wider text-center ${isDarkMode ? 'bg-slate-800 text-purple-400 border-slate-700' : 'bg-purple-100 text-purple-900 border-gray-200'}`}>
                 Pareto Spend Analysis Table
@@ -1757,7 +2144,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   </thead>
                   <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/60 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
                     {items.map((item, idx) => (
-                      <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
+                      <tr key={idx} onClick={() => setSupplierDetailName(item.name)} className={`cursor-pointer ${isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}`}>
                         <td className="py-2 px-3 font-semibold truncate max-w-[120px]" title={item.name}>
                           {item.name}
                         </td>
@@ -1775,11 +2162,113 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
           </div>
         </div>
+
+        {renderSupplierDetailPopup(items)}
       </div>
     );
   };
 
+  // Popup detail PO per item (dipakai chart Pareto dan kartu tunggal)
+  const renderCategoryDetailPopup = (items) => {
+          const idx = items.findIndex((it) => it.name === paretoDetailName);
+          if (idx === -1) return null;
+          const sel = items[idx];
+          const rows = sel.rows || [];
+          const totalQty = rows.reduce((sum, r) => sum + (r.qty || 0), 0);
+          const hasQty = rows.some((r) => r.qty !== null && r.qty !== undefined);
+          const isVital = idx === 0 || sel.cumPercent <= 80;
+          const stats = [
+            { label: 'Rank', value: `#${idx + 1} of ${items.length}` },
+            { label: 'Total Spend', value: formatUSD(sel.totalCost) },
+            { label: 'Share of Total', value: `${sel.indPercent}%` },
+            { label: 'Cumulative', value: `${sel.cumPercent}%` },
+            { label: 'Total PO', value: new Set(rows.map((r) => r.po)).size },
+            { label: hasQty ? 'Total Qty' : 'Transactions', value: hasQty ? totalQty.toLocaleString('en-US') : rows.length }
+          ];
+          return (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+              onClick={() => setParetoDetailName(null)}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                onClick={(e) => e.stopPropagation()}
+                className={`w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 rounded-2xl border shadow-2xl ${isDarkMode ? 'bg-[#1E293B] border-slate-700' : 'bg-white border-gray-200'}`}
+              >
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="min-w-0">
+                    <div className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                      {barChartGroup}{originFilter ? ` • ${originFilter}` : ''}
+                    </div>
+                    <h3 className={`font-bold text-base break-words ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{sel.name}</h3>
+                    <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${isVital ? (isDarkMode ? 'bg-blue-500/15 text-blue-400' : 'bg-blue-50 text-blue-600') : (isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-gray-100 text-gray-600')}`}>
+                      {isVital ? 'Vital few (within 80%)' : 'Remaining items'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => setParetoDetailName(null)}
+                    className={`text-sm px-2 py-1 rounded-md cursor-pointer ${isDarkMode ? 'text-slate-400 hover:bg-slate-800' : 'text-gray-500 hover:bg-gray-100'}`}
+                    aria-label="Close detail"
+                  >
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+                  {stats.map((st) => (
+                    <div key={st.label} className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                      <div className={`text-[10px] uppercase font-semibold ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>{st.label}</div>
+                      <div className={`text-sm font-bold ${isDarkMode ? 'text-slate-100' : 'text-gray-900'}`}>{st.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-x-auto max-h-72 overflow-y-auto">
+                  <table className={`w-full text-left text-xs ${isDarkMode ? 'text-slate-300' : 'text-gray-600'}`}>
+                    <thead className={`uppercase border-b sticky top-0 ${isDarkMode ? 'border-slate-700 text-slate-500 bg-[#1E293B]' : 'border-gray-200 text-gray-400 bg-white'}`}>
+                      <tr>
+                        <th className="py-2 pr-2 font-semibold">PO Number</th>
+                        <th className="py-2 pr-2 font-semibold">Date</th>
+                        <th className="py-2 pr-2 font-semibold">Supplier</th>
+                        {hasQty && <th className="py-2 pr-2 font-semibold text-right">Qty</th>}
+                        <th className="py-2 pr-2 font-semibold text-right">Value</th>
+                        <th className="py-2 pl-2 font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={i} className={`border-b last:border-0 ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`}>
+                          <td className="py-2 pr-2 font-medium">{r.po}</td>
+                          <td className="py-2 pr-2 whitespace-nowrap">{r.date && r.date !== '-' ? String(r.date).slice(0, 10) : '-'}</td>
+                          <td className="py-2 pr-2">{r.supplier}</td>
+                          {hasQty && <td className="py-2 pr-2 text-right">{r.qty ?? '-'}</td>}
+                          <td className="py-2 pr-2 text-right whitespace-nowrap font-semibold">{formatUSD(r.cost)}</td>
+                          <td className="py-2 pl-2">{r.status}</td>
+                        </tr>
+                      ))}
+                      {rows.length === 0 && (
+                        <tr><td colSpan={hasQty ? 6 : 5} className={`py-4 text-center ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No transaction data.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          );
+  };
+
   const renderCategoryParetoChart = () => {
+    // Kosongkan Pareto sampai user klik salah satu box kategori (barChartGroup terisi)
+    if (!barChartGroup) {
+      return (
+        <div className={`h-64 flex flex-col items-center justify-center gap-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+          <i className="fa-solid fa-hand-pointer text-2xl opacity-60"></i>
+          <span>Click a category box above to see its Pareto.</span>
+        </div>
+      );
+    }
+
     const { items } = categoryParetoData;
 
     if (!items || items.length === 0) {
@@ -1802,11 +2291,12 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
     const maxBarVal = Math.max(...items.map((d) => d.totalCost), 1);
     const numBars = items.length;
-    const step = chartW / numBars;
-    const barW = Math.max(step * 0.55, 12);
+    const step = Math.min(chartW / numBars, 90); // batasi jarak antar batang supaya item sedikit tidak melebar
+    const offsetX = (chartW - step * numBars) / 2; // kelompok batang diletakkan di tengah area chart
+    const barW = Math.min(Math.max(step * 0.5, 12), 40);
 
     const linePoints = items.map((item, i) => {
-      const cx = padLeft + (i + 0.5) * step;
+      const cx = padLeft + offsetX + (i + 0.5) * step;
       const cy = padTop + chartH - (item.cumPercent / 100) * chartH;
       return { cx, cy, percent: item.cumPercent, name: item.name };
     });
@@ -1821,7 +2311,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
           <div className="lg:col-span-8 flex flex-col items-center">
             <div className="w-full overflow-x-auto scrollbar-thin">
               <div className="min-w-[650px] relative">
-                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto overflow-visible select-none">
+                <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} width={svgWidth} style={{ width: svgWidth, maxWidth: '100%', height: 'auto' }} className="block mx-auto overflow-visible select-none">
                   {[0, 20, 40, 60, 80, 100].map((pct) => {
                     const y = padTop + chartH - (pct / 100) * chartH;
                     return (
@@ -1874,13 +2364,15 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   </text>
 
                   {items.map((item, i) => {
-                    const cx = padLeft + (i + 0.5) * step;
+                    const cx = padLeft + offsetX + (i + 0.5) * step;
                     const xBar = cx - barW / 2;
                     const hBar = (item.totalCost / maxBarVal) * chartH;
                     const yBar = padTop + chartH - hBar;
 
                     return (
-                      <g key={i} className="group cursor-pointer">
+                      <g key={i} className="group cursor-pointer" onClick={() => setParetoDetailName(item.name)}>
+                        {/* Area klik selebar kolom supaya bar kecil tetap mudah diklik */}
+                        <rect x={cx - step / 2} y={padTop} width={step} height={chartH + 60} fill="transparent" />
                         <rect
                           x={xBar}
                           y={yBar}
@@ -1892,7 +2384,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                           rx="3"
                           className="transition-all duration-300 group-hover:opacity-80"
                         >
-                          <title>{`${item.name}: ${formatUSD(item.totalCost)} (cumulative ${item.cumPercent}%)`}</title>
+                          <title>{`${item.name}: ${formatUSD(item.totalCost)} (cumulative ${item.cumPercent}%) - click for details`}</title>
                         </rect>
                         <text
                           x={cx}
@@ -1957,7 +2449,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   </thead>
                   <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800/60 text-slate-300' : 'divide-gray-200 text-gray-700'}`}>
                     {items.map((item, idx) => (
-                      <tr key={idx} className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}>
+                      <tr key={idx} onClick={() => setParetoDetailName(item.name)} className={`cursor-pointer ${isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-purple-50/50'}`}>
                         <td className="py-2 px-3 font-semibold truncate max-w-[120px]" title={item.name}>
                           {item.name}
                         </td>
@@ -1975,6 +2467,8 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
             </div>
           </div>
         </div>
+
+        {renderCategoryDetailPopup(items)}
       </div>
     );
   };
@@ -2017,7 +2511,10 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
       <AppLayout
         activePage={activePage}
         changePage={changePage}
-        onLogout={onLogout}
+        onLogout={() => {
+          dashboardYearByTab = { ...DEFAULT_YEAR_BY_TAB }; // pilihan tahun tidak terbawa ke user lain
+          if (typeof onLogout === 'function') onLogout();
+        }}
         isDarkMode={isDarkMode}
         setIsDarkMode={setIsDarkMode}
         submenu={{
@@ -2078,7 +2575,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
 
           {activeTab === 'overview' && (
             <>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
                 <div className={`p-4 rounded-2xl border shadow-xs flex items-center gap-3 ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="w-10 h-10 rounded-lg bg-red-600 text-white flex items-center justify-center text-lg shrink-0">
                     <i className="fa-solid fa-calendar-days"></i>
@@ -2129,24 +2626,13 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   <div className="min-w-0 flex-1">
                     <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Total PO</p>
                     <div className="flex items-center flex-wrap gap-x-2 gap-y-1">
-                      <p className={`text-xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders}</p>
+                      <p className={`text-xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{kpiStats.totalOrders.toLocaleString('en-US')}</p>
                       {kpiStats.importCount > 0 && (
                         <span className="text-xs font-bold text-purple-500 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20 whitespace-nowrap shrink-0">
-                          {kpiStats.importCount} Import
+                          {kpiStats.importCount.toLocaleString('en-US')} Import
                         </span>
                       )}
                     </div>
-                  </div>
-                </div>
-
-                <div onClick={() => setShowPendingModal(true)} className={`p-4 rounded-2xl border shadow-xs flex items-center gap-3 cursor-pointer hover:border-red-500 transition-all group ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
-                  <div className="w-10 h-10 rounded-lg bg-red-600 text-white flex items-center justify-center text-lg shrink-0">
-                    <i className="fa-solid fa-file-invoice-dollar"></i>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className={`text-xs font-semibold uppercase tracking-wider truncate ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Pending Payment</p>
-                    <p title={formatUSD(kpiStats.pendingPayment)} className="text-xl font-black leading-tight text-red-500 break-words">{formatUSDNoDecimal(kpiStats.pendingPayment)}</p>
-                    <button className="text-[11px] font-semibold text-red-500 group-hover:underline mt-0.5 inline-block cursor-pointer focus:outline-none">Click for details & origin →</button>
                   </div>
                 </div>
 
@@ -2478,46 +2964,22 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     </div>
                     {categoryFilterList.map((cat) => {
                       const isSelected = pieCategoryFilter === cat.name;
-                      const spark = categorySparkData[cat.name];
-                      const series = spark ? spark.series : [];
-                      const trend = spark ? spark.trend : null;
-                      const sw = 90, sh = 26;
-                      const maxS = Math.max(...series, 1);
-                      const pts = series.length > 1
-                        ? series.map((v, i) => `${(i / (series.length - 1)) * sw},${sh - 2 - (v / maxS) * (sh - 6)}`).join(' ')
-                        : `0,${sh / 2} ${sw},${sh / 2}`;
-                      const lineColor = trend === 'down' ? '#EF4444' : '#10B981';
                       return (
                         <button
                           key={cat.name}
                           type="button"
                           onClick={() => selectCategoryFilter(cat.name)}
                           title="Click to filter the charts below to this category"
-                          className={`relative text-left p-4 rounded-2xl border shadow-xs transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${
+                          className={`relative text-center p-4 rounded-2xl border shadow-xs transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${
                             isSelected
                               ? (isDarkMode ? 'bg-red-950/40 border-red-500 ring-2 ring-red-500/40' : 'bg-red-50 border-red-400 ring-2 ring-red-300/60')
                               : (isDarkMode ? 'bg-[#1E293B] border-slate-800 hover:border-red-500' : 'bg-white border-gray-200 hover:border-red-400')
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <span className={`text-xs font-bold uppercase tracking-wide truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
-                              {cat.name}
-                            </span>
-                            {trend && (
-                              <i className={`fa-solid ${trend === 'up' ? 'fa-arrow-trend-up text-emerald-500' : 'fa-arrow-trend-down text-red-500'} text-xs`}></i>
-                            )}
-                          </div>
-                          <div className="flex items-end justify-between gap-2 mt-1">
-                            <span className={`text-2xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
-                            <svg viewBox={`0 0 ${sw} ${sh}`} className="w-16 h-6 shrink-0 overflow-visible">
-                              <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-                            </svg>
-                          </div>
-                          {isSelected && (
-                            <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center">
-                              <i className="fa-solid fa-filter"></i>
-                            </span>
-                          )}
+                          <span className={`block text-xs font-bold uppercase tracking-wide truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                            {cat.name}
+                          </span>
+                          <span className={`block mt-1 text-2xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
                         </button>
                       );
                     })}
@@ -2544,7 +3006,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
                       {pieCategoryFilter
                         ? `Showing data for ${pieCategoryFilter} only.`
-                        : (drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to view sub-categories.' : `Category breakdown for ${selectedGroup}.`)}
+                        : (drillLevel === 0 ? 'Click on a main slice (Direct / Indirect) to see its sub-categories.' : `Category breakdown for ${selectedGroup}.`)}
                     </p>
                   </div>
                   {renderDrilldownPieChart()}
@@ -2579,7 +3041,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                         : (drillLevel === 1 && selectedGroup
                           ? `Comparison between Import and Local spend for ${selectedGroup}.`
                           : 'Comparison between Import and Local spend.')}
-                      {' '}Click Import or Local to see its Pareto.
+                      {' '}Click Import or Local to see its details.
                     </p>
                   </div>
                   {renderOriginPieChart()}
@@ -2610,7 +3072,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                       <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>
                         {barChartGroup
                           ? 'Item spend distribution analysis with cumulative percentage curve (80/20 Pareto Principle).'
-                          : `Category spend distribution for ${originFilter} spend, with cumulative percentage curve (80/20 Pareto Principle). Click a category box above to see the Top 20 Pareto items in that category.`}
+                          : `Click a category box above to see the Top 20 Pareto items in that category (${originFilter} spend).`}
                       </p>
                     </div>
                   </div>
@@ -2662,53 +3124,30 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     </div>
                     {categoryFilterList.map((cat) => {
                       const isSelected = supplierCategoryGroup === cat.name;
-                      const spark = categorySparkData[cat.name];
-                      const series = spark ? spark.series : [];
-                      const trend = spark ? spark.trend : null;
-                      const sw = 90, sh = 26;
-                      const maxS = Math.max(...series, 1);
-                      const pts = series.length > 1
-                        ? series.map((v, i) => `${(i / (series.length - 1)) * sw},${sh - 2 - (v / maxS) * (sh - 6)}`).join(' ')
-                        : `0,${sh / 2} ${sw},${sh / 2}`;
-                      const lineColor = trend === 'down' ? '#EF4444' : '#10B981';
                       return (
                         <button
                           key={cat.name}
                           type="button"
                           onClick={() => setSupplierCategoryGroup(isSelected ? null : cat.name)}
                           title="Click to filter the charts below to this category"
-                          className={`relative text-left p-4 rounded-2xl border shadow-xs transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${
+                          className={`relative text-center p-4 rounded-2xl border shadow-xs transition-all cursor-pointer hover:shadow-md hover:-translate-y-0.5 ${
                             isSelected
                               ? (isDarkMode ? 'bg-red-950/40 border-red-500 ring-2 ring-red-500/40' : 'bg-red-50 border-red-400 ring-2 ring-red-300/60')
                               : (isDarkMode ? 'bg-[#1E293B] border-slate-800 hover:border-red-500' : 'bg-white border-gray-200 hover:border-red-400')
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <span className={`text-xs font-bold uppercase tracking-wide truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
-                              {cat.name}
-                            </span>
-                            {trend && (
-                              <i className={`fa-solid ${trend === 'up' ? 'fa-arrow-trend-up text-emerald-500' : 'fa-arrow-trend-down text-red-500'} text-xs`}></i>
-                            )}
-                          </div>
-                          <div className="flex items-end justify-between gap-2 mt-1">
-                            <span className={`text-2xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
-                            <svg viewBox={`0 0 ${sw} ${sh}`} className="w-16 h-6 shrink-0 overflow-visible">
-                              <polyline points={pts} fill="none" stroke={lineColor} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-                            </svg>
-                          </div>
-                          {isSelected && (
-                            <span className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center">
-                              <i className="fa-solid fa-filter"></i>
-                            </span>
-                          )}
+                          <span className={`block text-xs font-bold uppercase tracking-wide truncate ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                            {cat.name}
+                          </span>
+                          <span className={`block mt-1 text-2xl font-black leading-tight ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{formatShortUSD(cat.total)}</span>
                         </button>
                       );
                     })}
                   </div>
                 </div>
               )}
-              <div className={`p-6 rounded-2xl border shadow-xs flex flex-col justify-between min-h-[440px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-stretch">
+              <div className={`xl:col-span-5 min-w-0 p-6 rounded-2xl border shadow-xs flex flex-col min-h-[440px] ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                 <div className="w-full text-left mb-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Total Spend by Origin</h3>
@@ -2736,19 +3175,30 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                     {supplierCategoryGroup
                       ? `Comparison between Import and Local spend for ${supplierCategoryGroup}.`
                       : 'Comparison between Import and Local spend.'}
-                    {' '}Click Import or Local to filter the Top 20 Supplier Pareto below.
+                    {' '}Click Import or Local to see its details and filter the Top 20 Supplier.
                   </p>
                 </div>
-                {renderGenericPieChart(
-                  supplierOriginPieData.categories,
-                  supplierOriginPieData.grandTotal,
-                  (name) => setSupplierOriginFilter((prev) => (prev === name ? null : name)),
-                  true,
-                  supplierOriginFilter
-                )}
+                <div className="flex-1 flex flex-col justify-center">
+                  {renderGenericPieChart(
+                    supplierOriginPieData.categories,
+                    supplierOriginPieData.grandTotal,
+                    (name) => { setSupplierOriginPopup(name); setSupplierOriginFilter(name); },
+                    true,
+                    supplierOriginPopup || supplierOriginFilter
+                  )}
+                </div>
+                {renderOriginDetailPopup({
+                  originName: supplierOriginPopup,
+                  slices: supplierOriginPieData.categories,
+                  orders: supplierCategoryGroup
+                    ? yearFilteredOrders.filter((o) => (getOrderCategory(o) || 'Other') === supplierCategoryGroup)
+                    : yearFilteredOrders,
+                  contextLabel: supplierCategoryGroup,
+                  onClose: () => setSupplierOriginPopup(null)
+                })}
               </div>
               {(
-                <div className={`p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
+                <div className={`xl:col-span-7 min-w-0 p-6 rounded-2xl border shadow-xs flex flex-col ${isDarkMode ? 'bg-[#1E293B] border-slate-800' : 'bg-white border-gray-200'}`}>
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
                     <div>
                       <div className="flex items-center gap-3 flex-wrap">
@@ -2791,6 +3241,7 @@ export default function Dashboard({ changePage, activePage = 'dashboard', onLogo
                   {renderSupplierParetoChart()}
                 </div>
               )}
+              </div>
             </div>
           )}
 

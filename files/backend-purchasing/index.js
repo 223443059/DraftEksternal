@@ -509,21 +509,66 @@ app.delete('/api/supplier-evaluations/clear', async (req, res) => {
 // =================================================================
 app.get('/api/market-prices', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM market_prices ORDER BY recorded_date DESC');
+    const [rows] = await pool.query('SELECT * FROM market_prices ORDER BY recorded_date DESC, id DESC');
     return res.status(200).json(rows);
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
 
+// Simpan 1 baris harga. Kalau komoditas + tanggal yang sama sudah ada, barisnya DIPERBARUI
+// (bukan ditambah lagi), jadi import Excel yang sama berulang kali tidak membuat data ganda.
 app.post('/api/market-prices', async (req, res) => {
   try {
-    const { item_name, price, unit, change_percent, recorded_date } = req.body;
+    const { item_name, price, unit, change_percent, recorded_date, open, high, low, vol } = req.body;
+    if (!item_name) {
+      return res.status(400).json({ success: false, message: 'item_name wajib diisi.' });
+    }
+
+    const date = recorded_date || new Date().toISOString().split('T')[0];
+    const values = [
+      price || 0,
+      unit || 'USD / MT',
+      change_percent || 0,
+      open || 0,
+      high || 0,
+      low || 0,
+      vol || '0'
+    ];
+
+    const [existing] = await pool.query(
+      'SELECT id FROM market_prices WHERE item_name = ? AND recorded_date = ? LIMIT 1',
+      [item_name, date]
+    );
+
+    if (existing.length > 0) {
+      await pool.query(
+        'UPDATE market_prices SET price = ?, unit = ?, change_percent = ?, `open` = ?, `high` = ?, `low` = ?, `vol` = ? WHERE id = ?',
+        [...values, existing[0].id]
+      );
+      return res.status(200).json({ success: true, id: existing[0].id, updated: true });
+    }
+
     const [result] = await pool.query(
-      'INSERT INTO market_prices (item_name, price, unit, change_percent, recorded_date) VALUES (?, ?, ?, ?, ?)',
-      [item_name, price, unit || 'USD / MT', change_percent || 0, recorded_date || new Date()]
+      'INSERT INTO market_prices (item_name, price, unit, change_percent, `open`, `high`, `low`, `vol`, recorded_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [item_name, ...values, date]
     );
     return res.status(201).json({ success: true, id: result.insertId });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Hapus SEMUA data market price (dipakai tombol Reset di halaman Market Price).
+app.delete('/api/market-prices', async (req, res) => {
+  try {
+    const [result] = await pool.query('DELETE FROM market_prices');
+    await pool.query('ALTER TABLE market_prices AUTO_INCREMENT = 1');
+    return res.status(200).json({
+      success: true,
+      message: `${result.affectedRows} baris data berhasil dihapus.`,
+      deletedCount: result.affectedRows
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
