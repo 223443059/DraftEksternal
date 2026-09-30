@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Dashboard from './components/Dashboard.jsx';
 import Suppliers from './components/Suppliers.jsx';
 import Analytics from './components/Analytics.jsx'; 
@@ -18,7 +17,7 @@ const DEFAULT_INITIAL_ORDERS = [];
 
 // INNER COMPONENT - untuk menggunakan useRole hook
 function AppContent() {
-  const { isAdmin, hasPermission } = useRole();
+  const { isAdmin, hasPermission, user, loading } = useRole();
   const [activePage, setActivePage] = useState('dashboard');
 
   const [orders, setOrders] = useState(() => {
@@ -56,6 +55,20 @@ function AppContent() {
       console.error("Gagal menyimpan data PO:", error);
     }
   }, [orders]);
+
+  // Cek sesi SEKALI saat aplikasi dibuka: kalau flag 'isLoggedIn_Ladeu' masih true tapi profil gagal dimuat
+  // (token tidak ada / kedaluwarsa / ditolak server -> RoleContext mengosongkan user), kembalikan ke halaman login.
+  // Sebelumnya flag itu hanya dibaca sekali di awal, sehingga halaman tetap terbuka dengan user kosong.
+  const sessionChecked = useRef(false);
+  useEffect(() => {
+    if (loading || sessionChecked.current) return;
+    sessionChecked.current = true;
+    if (isLoggedIn && !user) {
+      localStorage.removeItem('isLoggedIn_Ladeu');
+      setIsLoggedIn(false);
+      setCurrentUser(null);
+    }
+  }, [loading, isLoggedIn, user]);
 
   const handleLoginSuccess = (userData) => {
     localStorage.setItem('isLoggedIn_Ladeu', 'true');

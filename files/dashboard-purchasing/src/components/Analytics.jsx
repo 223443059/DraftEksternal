@@ -231,7 +231,51 @@ const generateSvgPath = (data, maxScale) => {
 
 const mapPercentToY = (val, min, max, top = 30, bottom = 200) => {
   const range = (max - min) || 1;
-  return bottom - ((val - min) / range) * (bottom - top);
+  // Nilai di luar rentang sumbu (lonjakan ekstrem) digambar menempel di tepi grafik, tidak keluar area
+  const v = Math.max(min, Math.min(max, val));
+  return bottom - ((v - min) / range) * (bottom - top);
+};
+
+// Bentuk penanda tiap supplier (dipakai di chip dan di ujung garis, seperti Google Finance)
+const SUPPLIER_MARKER_SHAPES = ['square', 'circle', 'xcircle', 'diamond', 'triangle', 'ring']; // bentuk berbeda per supplier, seperti Google Finance
+// Digambar berpusat di (0,0) dengan ukuran sekitar 12 unit
+const renderMarkerShape = (shape, color, cutout = '#FFFFFF') => {
+  switch (shape) {
+    case 'square': return <rect x="-5" y="-5" width="10" height="10" rx="2" fill={color} />;
+    case 'diamond': return <polygon points="0,-6.5 6.5,0 0,6.5 -6.5,0" fill={color} />;
+    case 'triangle': return <polygon points="0,-6 6,5 -6,5" fill={color} strokeLinejoin="round" stroke={color} strokeWidth="1" />;
+    case 'ring': return <circle r="4" fill="none" stroke={color} strokeWidth="2.6" />;
+    case 'xcircle': return (
+      <g>
+        <circle r="5.6" fill={color} />
+        <path d="M-2.4 -2.4 L2.4 2.4 M2.4 -2.4 L-2.4 2.4" stroke={cutout} strokeWidth="1.6" strokeLinecap="round" />
+      </g>
+    );
+    case 'circle':
+    default: return <circle r="5.5" fill={color} />;
+  }
+};
+const MarkerIcon = ({ shape, color, size = 12, cutout }) => (
+  <svg width={size} height={size} viewBox="-7 -7 14 14" className="shrink-0" aria-hidden="true">{renderMarkerShape(shape, color, cutout)}</svg>
+);
+
+// Peredam Gaussian: melunakkan tepi "tangga" akibat satu PO besar masuk/keluar jendela hitung
+const gaussianSmooth = (series, sigma) => {
+  if (!sigma || series.length < 3) return series;
+  const r = Math.ceil(sigma * 3);
+  const kernel = Array.from({ length: 2 * r + 1 }, (_, k) => Math.exp(-((k - r) ** 2) / (2 * sigma * sigma)));
+  const n = series.length;
+  return series.map((_, i) => {
+    let sum = 0, w = 0;
+    for (let k = -r; k <= r; k++) {
+      const j = i + k;
+      if (j < 0 || j >= n) continue;
+      const kv = kernel[k + r];
+      sum += series[j] * kv;
+      w += kv;
+    }
+    return sum / w;
+  });
 };
 
 const formatShortDate = (d) => `${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })}`;
@@ -330,6 +374,8 @@ export default function Analytics({ changePage, onLogout }) {
   const [isDarkMode, setIsDarkMode] = useTheme();
   const [selectedSupplier, setSelectedSupplier] = usePersistentState('selectedSupplier', '');
   const [supplierSearchQuery, setSupplierSearchQuery] = useState('');
+  // Filter Category Group untuk Supplier Analysis ('' = semua kategori)
+  const [supplierCategory, setSupplierCategory] = useState('');
   const [showSupplierDropdown, setShowSupplierDropdown] = useState(false);
   const supplierSearchRef = useRef(null);
   const [activeTab, setActiveTab] = usePersistentState('activeTab', 'overview');
@@ -584,11 +630,20 @@ export default function Analytics({ changePage, onLogout }) {
     return [...new Set(names)].sort();
   }, [orders]);
 
+  // Supplier yang punya order di Category Group terpilih (null = semua kategori)
+  const supplierCategorySuppliers = useMemo(() => {
+    if (!supplierCategory) return null;
+    const set = new Set();
+    orders.forEach((o) => { if (getOrderCategory(o) === supplierCategory) set.add(canonSupplier(o)); });
+    return set;
+  }, [orders, supplierCategory, supplierCanon]);
+
   const filteredSupplierList = useMemo(() => {
-    const q = supplierSearchQuery.trim().toLowerCase();
-    if (!q) return supplierList;
-    return supplierList.filter((sup) => sup.toLowerCase().includes(q));
-  }, [supplierList, supplierSearchQuery]);
+    // Kolom berisi nama supplier terpilih (bukan ketikan user) -> tampilkan semua supplier di kategori, tidak hanya satu itu
+    const q = supplierSearchQuery === selectedSupplier ? '' : supplierSearchQuery.trim().toLowerCase();
+    return supplierList.filter((sup) => (!supplierCategorySuppliers || supplierCategorySuppliers.has(sup))
+      && (!q || sup.toLowerCase().includes(q)));
+  }, [supplierList, supplierSearchQuery, selectedSupplier, supplierCategorySuppliers]);
 
   // Search bar dibiarkan kosong sampai user memilih supplier; reset hanya jika supplier terpilih sudah tidak ada di daftar
   useEffect(() => {
@@ -616,6 +671,19 @@ export default function Analytics({ changePage, onLogout }) {
     if (selectedCategory && !orders.some((o) => getOrderCategory(o) === selectedCategory)) setSelectedCategory(null);
   }, [orders, availableYears, selectedYear, selectedCategory]);
 
+  // Ganti Category Group: pilihan supplier harus mengikuti kategori. Supplier terpilih yang tidak punya order
+  // di kategori baru dilepas, sehingga user memilih dari daftar supplier kategori tersebut.
+  const handleSupplierCategoryChange = (cat) => {
+    setSupplierCategory(cat);
+    if (cat && selectedSupplier) {
+      const stillValid = orders.some((o) => getOrderCategory(o) === cat && canonSupplier(o) === selectedSupplier);
+      if (!stillValid) {
+        setSelectedSupplier('');
+        setSupplierSearchQuery('');
+      }
+    }
+  };
+
   const handleSelectSupplier = (sup) => {
     setSelectedSupplier(sup);
     setSupplierSearchQuery(sup);
@@ -630,6 +698,9 @@ export default function Analytics({ changePage, onLogout }) {
   useEffect(() => {
     if (compareCategory && compareCategoryList.length > 0 && !compareCategoryList.includes(compareCategory)) setCompareCategory('');
   }, [compareCategoryList, compareCategory]);
+  useEffect(() => {
+    if (supplierCategory && compareCategoryList.length > 0 && !compareCategoryList.includes(supplierCategory)) setSupplierCategory('');
+  }, [compareCategoryList, supplierCategory]);
 
   // Supplier yang punya order di kategori terpilih (untuk pilihan "Add Supplier")
   const compareCategorySuppliers = useMemo(() => {
@@ -684,6 +755,7 @@ export default function Analytics({ changePage, onLogout }) {
       return {
         name: sup,
         color: COMPARE_SUPPLIER_COLORS[idx % COMPARE_SUPPLIER_COLORS.length],
+        shape: SUPPLIER_MARKER_SHAPES[idx % SUPPLIER_MARKER_SHAPES.length],
         totalSpend,
         totalOrders,
         avgPO: totalOrders > 0 ? totalSpend / totalOrders : 0,
@@ -698,12 +770,41 @@ export default function Analytics({ changePage, onLogout }) {
     return { months, rows, combinedTotal, maxSpend, maxMonthly };
   }, [orders, compareSuppliers, selectedYear, compareCategory]);
 
+  // Grafik Total Spend Comparison: total spend per supplier untuk 3 tahun terbaru di data (satu batang per tahun).
+  // Ikut filter Category Group; sengaja tidak ikut filter tahun karena grafik ini memang membandingkan antar tahun.
+  const compareYearChart = useMemo(() => {
+    const yearSet = new Set();
+    orders.forEach((o) => { const y = getYearFromOrder(o); if (y) yearSet.add(y); });
+    const years = [...yearSet].sort((a, b) => a - b).slice(-3);
+    const names = new Set(compareSuppliers);
+    const totals = {};
+    compareSuppliers.forEach((sup) => { totals[sup] = Object.fromEntries(years.map((y) => [y, 0])); });
+    orders.forEach((o) => {
+      const sup = canonSupplier(o);
+      if (!names.has(sup)) return;
+      if (compareCategory && getOrderCategory(o) !== compareCategory) return;
+      const y = getYearFromOrder(o);
+      if (totals[sup][y] === undefined) return;
+      totals[sup][y] += getOrderTotal(o);
+    });
+    const rows = compareSuppliers
+      .map((sup) => ({ name: sup, byYear: totals[sup], sum: years.reduce((acc, y) => acc + totals[sup][y], 0) }))
+      .sort((a, b) => b.sum - a.sum);
+    const rawMax = Math.max(...rows.flatMap((r) => years.map((y) => r.byYear[y])), 1);
+    // Sumbu X "rapi": langkah 1 / 2 / 2.5 / 5 x 10^n dengan maksimal 5 segmen
+    const pow = Math.pow(10, Math.floor(Math.log10(rawMax)));
+    const step = [1, 2, 2.5, 5, 10].map((m) => m * pow).find((st) => Math.ceil(rawMax / st) <= 5) || pow * 10;
+    const axisMax = Math.ceil(rawMax / step) * step;
+    const ticks = Array.from({ length: Math.round(axisMax / step) + 1 }, (_, n) => n * step);
+    return { years, rows, axisMax, ticks };
+  }, [orders, compareSuppliers, compareCategory, supplierCanon]);
+
   const compareGrowthChart = useMemo(() => {
     const RANGE_DAYS = { '1D': 1, '5D': 5, '1M': 30, '6M': 182, '1Y': 365, '2Y': 365 * 2, '3Y': 365 * 3, '4Y': 365 * 4, '5Y': 365 * 5 };
     const DAY_GRANULARITY_RANGES = ['1D', '5D', '1M'];
     // Rentang tahunan (1Y-5Y) ditampilkan ala Google Finance: garis harian, semua mulai dari 0% di awal rentang
-    const YEAR_RANGES = ['1Y', '2Y', '3Y', '4Y', '5Y'];
-    const ROLLING_DAYS = 30; // nilai per hari = total pengeluaran 30 hari terakhir (jendela pendek = naik-turun lebih terlihat)
+    const YEAR_RANGES = ['6M', 'YTD', '1Y', '2Y', '3Y', '4Y', '5Y'];
+    let ROLLING_DAYS = 45; // nilai per hari = total pengeluaran N hari terakhir; N disesuaikan dengan panjang rentang (lihat di bawah)
     const isYearMode = YEAR_RANGES.includes(compareTimeRange);
 
     const perSupplier = compareSuppliers.map((sup, idx) => {
@@ -729,7 +830,7 @@ export default function Analytics({ changePage, onLogout }) {
         .sort((a, b) => a.date - b.date);
 
       // points = biaya per hari (BUKAN kumulatif), supaya grafik bisa naik-turun seperti saham
-      return { name: sup, color: COMPARE_SUPPLIER_COLORS[idx % COMPARE_SUPPLIER_COLORS.length], points: sortedDays };
+      return { name: sup, color: COMPARE_SUPPLIER_COLORS[idx % COMPARE_SUPPLIER_COLORS.length], shape: SUPPLIER_MARKER_SHAPES[idx % SUPPLIER_MARKER_SHAPES.length], points: sortedDays };
     });
 
     const allDates = perSupplier.flatMap((s) => s.points.map((p) => p.date));
@@ -739,7 +840,13 @@ export default function Analytics({ changePage, onLogout }) {
 
     const earliest = new Date(Math.min(...allDates.map((d) => d.getTime())));
     const latest = new Date(Math.max(...allDates.map((d) => d.getTime())));
-    const granularity = (DAY_GRANULARITY_RANGES.includes(compareTimeRange) || isYearMode) ? 'day' : 'month';
+    // Data bulanan: hampir semua transaksi bertanggal 1 (tanggal hanya menyimpan bulan). Hitungan harian pada data seperti ini
+    // menghasilkan gelombang kotak (satu lonjakan per bulan), jadi grafik dihitung per BULAN dan garis menyambung titik bulanan.
+    const allPointDates = perSupplier.flatMap((sp) => sp.points.map((pt) => pt.date));
+    const isMonthlyData = allPointDates.length > 0 && allPointDates.filter((d) => d.getUTCDate() === 1).length / allPointDates.length >= 0.9;
+    const monthlyMode = isYearMode && isMonthlyData;
+    const MONTH_WINDOW = 1; // nilai tiap bulan = total pengeluaran bulan itu saja (tanpa perataan) supaya puncak & lembah runcing seperti saham
+    const granularity = (DAY_GRANULARITY_RANGES.includes(compareTimeRange) || (isYearMode && !isMonthlyData)) ? 'day' : 'month';
 
     let startDate;
     if (compareTimeRange === 'MAX') {
@@ -753,8 +860,36 @@ export default function Analytics({ changePage, onLogout }) {
     if (startDate < earliest) startDate = earliest;
 
     const periods = buildPeriods(startDate, latest, granularity);
+    // Lebar jendela mengikuti panjang rentang: rentang pendek (1Y) = jendela pendek, rentang panjang (3Y-5Y) = 120 hari.
+    // Jendela ini cukup panjang agar garis menyerupai tren saham (bukan melonjak per PO), tetapi tetap bergerigi harian.
+    if (isYearMode && !monthlyMode) ROLLING_DAYS = Math.max(45, Math.min(120, Math.round(periods.length / 9)));
 
     const rows = perSupplier.map((s) => {
+      if (monthlyMode) {
+        // ===== Data bulanan: total per bulan, digulirkan 2 bulan, lalu % perubahan dari jendela penuh pertama =====
+        const byMonth = new Map();
+        s.points.forEach((pt) => {
+          const k = `${pt.date.getUTCFullYear()}-${pt.date.getUTCMonth()}`;
+          byMonth.set(k, (byMonth.get(k) || 0) + pt.cost);
+        });
+        const first = periods[0];
+        const monthly = [];
+        for (let i = -(MONTH_WINDOW - 1); i < periods.length; i++) {
+          const d = new Date(first.getFullYear(), first.getMonth() + i, 1);
+          monthly.push(byMonth.get(`${d.getFullYear()}-${d.getMonth()}`) || 0);
+        }
+        const rolling = periods.map((_, i) => monthly.slice(i, i + MONTH_WINDOW).reduce((a, b) => a + b, 0));
+        const fullFrom = new Date(earliest.getFullYear(), earliest.getMonth() + (MONTH_WINDOW - 1), 1);
+        let baseIdx = rolling.findIndex((v, i) => periods[i] >= fullFrom && v > 0);
+        if (baseIdx === -1) baseIdx = rolling.findIndex((v) => v > 0);
+        const base = baseIdx >= 0 ? rolling[baseIdx] : 0;
+        const normalized = rolling.map((v, i) => {
+          if (!(base > 0)) return 0;
+          if (i >= baseIdx) return ((v - base) / base) * 100;
+          return v > 0 ? 0 : -100;
+        });
+        return { name: s.name, color: s.color, shape: s.shape, normalized, spend: rolling, hasBase: base > 0 };
+      }
       if (isYearMode) {
         // ===== Mode tahunan: total 90 hari terakhir per hari, diubah jadi % perubahan dari awal rentang =====
         const costByDay = new Map();
@@ -770,12 +905,15 @@ export default function Analytics({ changePage, onLogout }) {
           daily.push(costByDay.get(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`) || 0);
         }
         let run = 0;
-        const rolling = [];
+        const rollingRaw = [];
         for (let i = 0; i < total; i++) {
           run += daily[i];
           if (i >= ROLLING_DAYS) run -= daily[i - ROLLING_DAYS];
-          if (i >= ROLLING_DAYS - 1) rolling.push(run);
+          if (i >= ROLLING_DAYS - 1) rollingRaw.push(run);
         }
+        // Nilai apa adanya (rollingRaw) dipakai untuk angka di tooltip; garis memakai versi yang diredam sangat tipis
+        // (hanya melunakkan tepi "tangga"), bukan dihaluskan jadi gelombang, supaya tampak bergerigi harian seperti saham
+        const rolling = gaussianSmooth(rollingRaw, 1.5);
         // titik awal (0%) = hari pertama saat jendela 90 hari sudah penuh berisi data; sebelum itu garis datar di 0%
         const fullFrom = new Date(earliest.getFullYear(), earliest.getMonth(), earliest.getDate() + (ROLLING_DAYS - 1));
         let baseIdx = -1;
@@ -793,7 +931,7 @@ export default function Analytics({ changePage, onLogout }) {
           if (i >= baseIdx) return ((v - base) / base) * 100;
           return v > 0 ? 0 : -100;
         });
-        return { name: s.name, color: s.color, normalized, spend: rolling, hasBase: base > 0 };
+        return { name: s.name, color: s.color, shape: s.shape, normalized, spend: rollingRaw, hasBase: base > 0 };
       }
 
       // Pengeluaran per periode (harian / bulanan), bukan akumulasi -> ada naik dan turun
@@ -825,7 +963,7 @@ export default function Analytics({ changePage, onLogout }) {
       const avg = smooth.length ? smooth.reduce((acc, v) => acc + v, 0) / smooth.length : 0;
       const normalized = smooth.map((v) => (avg > 0 ? ((v - avg) / avg) * 100 : 0));
 
-      return { name: s.name, color: s.color, normalized, spend };
+      return { name: s.name, color: s.color, shape: s.shape, normalized, spend };
     });
 
     // Supplier tanpa data sama sekali di rentang ini: jika supplier lain punya data, posisinya = kosong (-100%)
@@ -833,15 +971,18 @@ export default function Analytics({ changePage, onLogout }) {
       rows.forEach((r) => { if (!r.hasBase) r.normalized = r.normalized.map(() => -100); });
     }
     const allNormalized = rows.flatMap((r) => r.normalized);
-    const rawMax = allNormalized.length ? Math.max(...allNormalized) : 10;
-    const rawMin = allNormalized.length ? Math.min(...allNormalized) : -10;
-    const pad = Math.max((rawMax - rawMin) * 0.06, 3); // padding tipis agar rentang sumbu-Y rapat -> gerakan garis lebih tegas
-    const maxNormalized = rawMax + pad;
+    // Mode tahunan: sumbu-Y memakai persentil 1%-98,5% (bukan nilai ekstrem) agar satu lonjakan PO besar tidak
+    // meratakan semua garis lain. Nilai di luar sumbu menempel di tepi grafik; angka aslinya tetap tampil di tooltip.
+    const pctOf = (arr, p) => { const sorted = [...arr].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(p * (sorted.length - 1))))]; };
+    const rawMax = allNormalized.length ? (isYearMode ? pctOf(allNormalized, monthlyMode ? 1 : 0.985) : Math.max(...allNormalized)) : 10;
+    const rawMin = allNormalized.length ? (isYearMode ? pctOf(allNormalized, monthlyMode ? 0 : 0.01) : Math.min(...allNormalized)) : -10;
+    const pad = Math.max((rawMax - rawMin) * 0.08, 3); // padding tipis agar rentang sumbu-Y rapat -> gerakan garis lebih tegas
+    const maxNormalized = Math.max(rawMax + pad, 3); // garis 0% selalu berada di dalam grafik
     const minNormalized = Math.min(rawMin - pad, 0);
 
     const labels = periods.map((d) => (
       isYearMode
-        ? d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
+        ? d.toLocaleDateString('en-US', monthlyMode ? { month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short', year: 'numeric' })
         : (granularity === 'day' ? formatShortDate(d) : formatShortMonthYear(d))
     ));
 
@@ -849,7 +990,9 @@ export default function Analytics({ changePage, onLogout }) {
     const ticks = [];
     if (isYearMode) {
       periods.forEach((d, i) => {
-        if (compareTimeRange === '1Y') {
+        if (compareTimeRange === '6M' || compareTimeRange === 'YTD') {
+          if (d.getDate() === 1) ticks.push({ idx: i, label: d.toLocaleString('en-US', { month: 'short' }) });
+        } else if (compareTimeRange === '1Y') {
           if (d.getDate() === 1 && d.getMonth() % 2 === 0) ticks.push({ idx: i, label: d.toLocaleString('en-US', { month: 'short' }) });
         } else if (d.getMonth() === 0 && d.getDate() === 1) {
           ticks.push({ idx: i, label: String(d.getFullYear()) });
@@ -869,7 +1012,7 @@ export default function Analytics({ changePage, onLogout }) {
       }
     }
 
-    return { rows, labels, minNormalized, maxNormalized, mode: isYearMode ? 'year' : 'default', ticks, yTicks };
+    return { rows, labels, minNormalized, maxNormalized, mode: isYearMode ? 'year' : 'default', smooth: monthlyMode, ticks, yTicks, rollingLabel: monthlyMode ? `${MONTH_WINDOW}-month` : `${ROLLING_DAYS}-day` };
   }, [orders, compareSuppliers, selectedYear, compareTimeRange, compareCategory]);
 
   const supplierAnalysisData = useMemo(() => {
@@ -879,6 +1022,7 @@ export default function Analytics({ changePage, onLogout }) {
 
     if (selectedSupplier) {
       orders.forEach((order) => {
+        if (supplierCategory && getOrderCategory(order) !== supplierCategory) return;
         if (canonSupplier(order) === selectedSupplier) {
           const yr = getYearFromOrder(order);
           const costUSD = getOrderTotal(order);
@@ -922,9 +1066,9 @@ export default function Analytics({ changePage, onLogout }) {
         totalYearPrev, totalYearCurrent, overallYoy, isPartialYear, cutoff, totalsPrev, totalsCurrent, monthlyYoy, maxSpend,
         months: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     };
-  }, [orders, selectedSupplier, comparisonYears]);
+  }, [orders, selectedSupplier, supplierCategory, comparisonYears]);
 
-  useEffect(() => { setSupBarSelected(null); }, [selectedSupplier, comparisonYears.previous, comparisonYears.current]);
+  useEffect(() => { setSupBarSelected(null); }, [selectedSupplier, supplierCategory, comparisonYears.previous, comparisonYears.current]);
 
   // Layout batang Supplier YoY (dipakai oleh batang, label angka, dan penempatan label % YoY agar tidak tabrakan)
   const SUP_X0 = 95, SUP_STEP = 820 / 11, SUP_BAR_W = 28, SUP_GAP = 2;
@@ -1105,6 +1249,7 @@ export default function Analytics({ changePage, onLogout }) {
       const yr = getYearFromOrder(o);
       if (selectedYear !== 'All' && yr !== parseInt(selectedYear, 10)) return;
       if (selectedSupplier && canonSupplier(o) !== selectedSupplier) return;
+      if (supplierCategory && getOrderCategory(o) !== supplierCategory) return;
       const status = getOrderStatus(o).toLowerCase();
       rows.push({
         o,
@@ -1114,7 +1259,7 @@ export default function Analytics({ changePage, onLogout }) {
       });
     });
     return rows;
-  }, [orders, selectedYear, selectedSupplier]);
+  }, [orders, selectedYear, selectedSupplier, supplierCategory]);
 
   // Angka di kartu Key Highlights (hanya menjumlah data dasar, tanpa parsing ulang)
   const supplierHighlights = useMemo(() => {
@@ -1332,7 +1477,21 @@ export default function Analytics({ changePage, onLogout }) {
                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-400'}`}>Select a supplier to compare USD spending between {comparisonYears.previous} and {comparisonYears.current}</p>
             </div>
 
-            <div className="max-w-xs relative" ref={supplierSearchRef}>
+            <div className="flex flex-wrap items-end gap-4">
+            <div className="w-full sm:w-56">
+               <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Category Group</label>
+               <select
+                 value={supplierCategory}
+                 onChange={(e) => handleSupplierCategoryChange(e.target.value)}
+                 className={`w-full text-sm font-semibold rounded-lg p-2.5 outline-none cursor-pointer border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white' : 'bg-white border-gray-300 text-gray-900'}`}
+               >
+                 <option value="">All Categories</option>
+                 {compareCategoryList.map((cat) => (
+                   <option key={cat} value={cat}>{cat}</option>
+                 ))}
+               </select>
+            </div>
+            <div className="flex-1 min-w-[220px] max-w-xs relative" ref={supplierSearchRef}>
                <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>Select Supplier</label>
                <div className="relative">
                  <i className={`fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}></i>
@@ -1341,7 +1500,7 @@ export default function Analytics({ changePage, onLogout }) {
                    value={supplierSearchQuery}
                    onChange={(e) => { setSupplierSearchQuery(e.target.value); setShowSupplierDropdown(true); if (e.target.value === '') setSelectedSupplier(''); }}
                    onFocus={() => setShowSupplierDropdown(true)}
-                   placeholder="Search supplier..."
+                   placeholder={supplierCategory ? `Search supplier in ${supplierCategory}...` : 'Search supplier...'}
                    className={`w-full text-sm rounded-lg block p-2.5 pl-8 outline-none transition-shadow ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-white placeholder-slate-500' : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400'} border`}
                  />
                </div>
@@ -1349,7 +1508,7 @@ export default function Analytics({ changePage, onLogout }) {
                  <div className={`absolute z-20 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border shadow-lg ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-white border-gray-200'}`}>
                    {filteredSupplierList.length === 0 ? (
                      <div className={`px-3 py-2 text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                       {supplierList.length === 0 ? 'No supplier data available' : `No suppliers match "${supplierSearchQuery}"`}
+                       {supplierList.length === 0 ? 'No supplier data available' : (supplierCategory && !supplierSearchQuery.trim() ? `No suppliers in ${supplierCategory}` : `No suppliers match "${supplierSearchQuery}"`)}
                      </div>
                    ) : (
                      filteredSupplierList.map((sup, idx) => (
@@ -1364,6 +1523,7 @@ export default function Analytics({ changePage, onLogout }) {
                    )}
                  </div>
                )}
+            </div>
             </div>
 
 
@@ -1597,10 +1757,11 @@ export default function Analytics({ changePage, onLogout }) {
                 </button>
               ))}
             </div>
-            {selectedSupplier && (
-              <p className={`text-[11px] mt-4 pt-3 border-t truncate ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-100 text-gray-400'}`}>
-                Supplier: <span className="font-semibold text-red-500">{selectedSupplier}</span>
-              </p>
+            {(selectedSupplier || supplierCategory) && (
+              <div className={`text-[11px] mt-4 pt-3 border-t space-y-0.5 ${isDarkMode ? 'border-slate-700 text-slate-500' : 'border-gray-100 text-gray-400'}`}>
+                {selectedSupplier && <p className="truncate">Supplier: <span className="font-semibold text-red-500">{selectedSupplier}</span></p>}
+                {supplierCategory && <p className="truncate">Category Group: <span className="font-semibold text-red-500">{supplierCategory}</span></p>}
+              </div>
             )}
           </div>
           </div>
@@ -1810,11 +1971,6 @@ export default function Analytics({ changePage, onLogout }) {
                         <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-[#0F172A] border-slate-700' : 'bg-gray-50 border-gray-200/80'}`}>
                           <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
                             <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Supplier Contribution (Pareto Analysis)</h4>
-                            {categoryDetail.pareto.rows.length > 0 && (
-                              <span className={`text-[10px] font-semibold px-2 py-1 rounded-md ${isDarkMode ? 'bg-slate-800 text-slate-300' : 'bg-white text-gray-600 border border-gray-200'}`}>
-                                {categoryDetail.pareto.vitalCount} of {categoryDetail.pareto.rows.length} suppliers = 80% of spend
-                              </span>
-                            )}
                           </div>
                           {(() => {
                             const { rows, total, vitalCount } = categoryDetail.pareto;
@@ -2204,7 +2360,7 @@ export default function Analytics({ changePage, onLogout }) {
                     key={row.name}
                     className={`inline-flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full text-xs font-semibold border ${isDarkMode ? 'bg-[#0F172A] border-slate-700 text-slate-200' : 'bg-gray-50 border-gray-200 text-gray-700'}`}
                   >
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: row.color }}></span>
+                    <MarkerIcon shape={row.shape} color={row.color} size={12} cutout={isDarkMode ? '#0F172A' : '#F9FAFB'} />
                     {row.name}
                     <button
                       onClick={() => handleRemoveCompareSupplier(row.name)}
@@ -2255,27 +2411,86 @@ export default function Analytics({ changePage, onLogout }) {
                   </table>
                 </div>
 
-                <div>
-                  <h4 className={`font-bold text-sm mb-4 ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Spend Comparison</h4>
-                  <div className="space-y-3">
-                    {[...compareSupplierData.rows].sort((a, b) => b.totalSpend - a.totalSpend).map((row) => {
-                      const pct = compareSupplierData.maxSpend > 0 ? (row.totalSpend / compareSupplierData.maxSpend) * 100 : 0;
-                      return (
-                        <div key={row.name}>
-                          <div className="flex items-center justify-between mb-1 text-xs font-semibold">
-                            <span className={isDarkMode ? 'text-slate-300' : 'text-gray-700'}>{row.name}</span>
-                            <span className={isDarkMode ? 'text-slate-400' : 'text-gray-500'}>{formatSpend(row.totalSpend)}</span>
-                          </div>
-                          <div className={`w-full h-3 rounded-full overflow-hidden ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
-                            <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: row.color }}></div>
+                {(() => {
+                  const { years, rows, axisMax, ticks } = compareYearChart;
+                  // Warna per tahun (terlama -> terbaru): biru tua, merah, biru muda
+                  const YEAR_COLORS = isDarkMode ? ['#3B82F6', '#EF4444', '#93C5FD'] : ['#0B3C8C', '#EF2B3A', '#A9C6EE'];
+                  const yearColor = (idx) => YEAR_COLORS[idx + (3 - years.length)] || YEAR_COLORS[idx];
+                  const ROW_H = 20 + years.length * 14; // tinggi satu grup batang supplier
+                  return (
+                    <div className={`rounded-xl border p-5 ${isDarkMode ? 'border-slate-800 bg-[#0F172A]/40' : 'border-gray-200 bg-white'}`}>
+                      <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
+                        <div className="flex items-center gap-3">
+                          <span className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isDarkMode ? 'bg-blue-500/15 text-blue-400' : 'bg-blue-50 text-blue-600'}`}>
+                            <i className="fa-solid fa-database"></i>
+                          </span>
+                          <div>
+                            <h4 className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-gray-900'}`}>Total Spend Comparison</h4>
+                            <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>Total spend by supplier (USD)</p>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                        <div className="flex items-center gap-4">
+                          {years.map((y, idx) => (
+                            <span key={y} className={`inline-flex items-center gap-1.5 text-[11px] font-bold ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: yearColor(idx) }}></span>
+                              {y}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
 
-                <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'border-slate-800 bg-[#1E293B]' : 'border-gray-200 bg-white'}`}>
+                      {years.length === 0 ? (
+                        <div className={`h-24 flex items-center justify-center text-sm ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>No data.</div>
+                      ) : (
+                        <div className="flex">
+                          {/* Nama supplier */}
+                          <div className="w-28 sm:w-36 shrink-0">
+                            {rows.map((row) => (
+                              <div key={row.name} className={`flex items-center justify-end pr-3 text-xs font-semibold text-right ${isDarkMode ? 'text-slate-300' : 'text-gray-700'}`} style={{ height: ROW_H }}>
+                                <span className="line-clamp-2 break-words" title={row.name}>{row.name}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Area batang + grid + sumbu X (ruang di kanan untuk label angka) */}
+                          <div className="relative flex-1 min-w-0 pr-20">
+                            <div className="absolute inset-y-0 left-0 right-20 pointer-events-none">
+                              {ticks.map((t) => (
+                                <div key={t} className={`absolute top-0 bottom-6 border-l ${t === 0 ? (isDarkMode ? 'border-slate-600' : 'border-gray-300') : (isDarkMode ? 'border-slate-800' : 'border-gray-100')}`} style={{ left: `${(t / axisMax) * 100}%` }}></div>
+                              ))}
+                            </div>
+
+                            <div className="relative">
+                              {rows.map((row) => (
+                                <div key={row.name} className="flex flex-col justify-center gap-[3px]" style={{ height: ROW_H }}>
+                                  {years.map((y, idx) => {
+                                    const v = row.byYear[y];
+                                    return (
+                                      <div key={y} className="flex items-center gap-2" title={`${row.name} - ${y}: ${formatSpend(v)}`}>
+                                        <div className="h-[11px] rounded-r-[3px] transition-all duration-500 shrink-0" style={{ width: `${(v / axisMax) * 100}%`, minWidth: v > 0 ? 2 : 0, backgroundColor: yearColor(idx) }}></div>
+                                        <span className={`text-[10px] font-semibold whitespace-nowrap ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}`}>{formatSpend(v)}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="relative h-6 mt-0">
+                              {ticks.map((t) => (
+                                <span key={t} className={`absolute top-1.5 text-[10px] font-semibold -translate-x-1/2 ${isDarkMode ? 'text-slate-500' : 'text-gray-500'}`} style={{ left: `${(t / axisMax) * 100}%` }}>
+                                  {fmtBarLabel(t)}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <div className={`rounded-xl border overflow-hidden ${isDarkMode ? 'border-slate-800 bg-[#1E293B]' : 'border-gray-200 bg-[#F8F9FC]'}`}>
                   <div className="p-5 pb-4">
                     <div className="flex flex-wrap items-center gap-2 mb-6">
                       {compareSupplierData.rows.map((row) => (
@@ -2283,7 +2498,7 @@ export default function Analytics({ changePage, onLogout }) {
                           key={row.name}
                           className={`inline-flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-full text-sm font-semibold border ${isDarkMode ? 'bg-transparent border-slate-700 text-slate-200' : 'bg-white border-gray-200 text-gray-800'}`}
                         >
-                          <span className="w-3 h-3 rounded-[3px] shrink-0" style={{ backgroundColor: row.color }}></span>
+                          <MarkerIcon shape={row.shape} color={row.color} size={14} cutout={isDarkMode ? '#1E293B' : '#FFFFFF'} />
                           {row.name}
                           <button
                             onClick={() => handleRemoveCompareSupplier(row.name)}
@@ -2297,7 +2512,7 @@ export default function Analytics({ changePage, onLogout }) {
 
                     <p className={`text-[11px] mb-2 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`}>
                       {compareGrowthChart.mode === 'year'
-                        ? 'Change in total spend over the last 30 days compared to each supplier\'s first period with orders (0% = starting point, -100% = no spend in the last 30 days). Hover over the chart to see values.'
+                        ? `Change in total spend over a rolling ${compareGrowthChart.rollingLabel} window compared to each supplier's first full window (0% = starting point, -100% = no spend in the window). Extreme spikes are cut off at the chart edge; hover over the chart to see exact values.`
                         : 'Spend per period compared with each supplier\'s average (0% = average). Hover over the chart to see values.'}
                     </p>
                     <div className="w-full h-80 relative">
@@ -2374,16 +2589,23 @@ export default function Analytics({ changePage, onLogout }) {
                             x: n > 1 ? (idx / (n - 1)) * 920 + 40 : 500,
                             y: mapPercentToY(val, compareGrowthChart.minNormalized, compareGrowthChart.maxNormalized, 25, 260)
                           }));
+                          const smooth = compareGrowthChart.smooth;
+                          const showDots = false; // tanpa titik di sepanjang garis; penanda hanya di ujung garis
                           return (
-                            <path
-                              key={row.name}
-                              d={points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x},${pt.y}`).join(' ')}
-                              fill="none"
-                              stroke={row.color}
-                              strokeWidth={compareGrowthChart.mode === 'year' ? 2 : 2.5}
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            />
+                            <g key={row.name}>
+                              <path
+                                d={smooth ? generateSmoothSvgPath(points) : points.map((pt, i) => `${i === 0 ? 'M' : 'L'} ${pt.x},${pt.y}`).join(' ')}
+                                fill="none"
+                                stroke={row.color}
+                                strokeWidth={smooth ? 3.5 : (compareGrowthChart.mode === 'year' ? 2 : 2.5)}
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={smooth ? { filter: `drop-shadow(0px 3px 4px ${row.color}33)` } : undefined}
+                              />
+                              {showDots && points.map((pt, i) => (
+                                <circle key={i} cx={pt.x} cy={pt.y} r="4.5" fill={isDarkMode ? '#1E293B' : '#FFFFFF'} stroke={row.color} strokeWidth="2.5" />
+                              ))}
+                            </g>
                           );
                         })}
 
@@ -2393,11 +2615,9 @@ export default function Analytics({ changePage, onLogout }) {
                           const x = n > 1 ? (lastIdx / (n - 1)) * 920 + 40 : 500;
                           const y = mapPercentToY(row.normalized[lastIdx], compareGrowthChart.minNormalized, compareGrowthChart.maxNormalized, 25, 260);
                           return (
-                            <circle
-                              key={`${row.name}-dot`}
-                              cx={x} cy={y} r="5"
-                              fill={row.color}
-                            />
+                            <g key={`${row.name}-dot`} transform={`translate(${x},${y}) scale(1.3)`}>
+                              {renderMarkerShape(row.shape, row.color, isDarkMode ? '#1E293B' : '#FFFFFF')}
+                            </g>
                           );
                         })}
 

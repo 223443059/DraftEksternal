@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef } from 'react';
 
 const RoleContext = createContext(null);
 
@@ -12,10 +12,31 @@ const ROLE_PERMISSIONS = {
   user: ['view_dashboard']
 };
 
+// Cek masa berlaku JWT di browser (tanpa request). Token rusak / bukan JWT dianggap tidak valid.
+const isTokenExpired = (token) => {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now();
+  } catch {
+    return true;
+  }
+};
+
 export function RoleProvider({ children }) {
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const profileRequest = useRef(null); // request profil yang sedang berjalan (dipakai bersama agar tidak terkirim dobel)
+
+  // Bersihkan sesi lokal. 'isLoggedIn_Ladeu' ikut dihapus supaya aplikasi tidak tetap menganggap user login
+  // padahal token-nya sudah tidak valid (sama seperti yang dilakukan logout()).
+  const clearSession = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('isLoggedIn_Ladeu');
+    setUser(null);
+    setPermissions([]);
+  };
 
   const fetchProfile = async (token) => {
     try {
@@ -38,36 +59,38 @@ export function RoleProvider({ children }) {
       setPermissions(finalPermissions);
       return true;
     } catch (err) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      setUser(null);
-      setPermissions([]);
+      clearSession();
       return false;
     }
   };
   
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (token) {
-      fetchProfile(token).finally(() => setLoading(false));
-    } else {
+    if (!token) {
       setLoading(false);
+      return;
     }
+    // Token sudah kedaluwarsa / rusak: hapus langsung tanpa memanggil server (tidak ada error 401 di console)
+    if (isTokenExpired(token)) {
+      clearSession();
+      setLoading(false);
+      return;
+    }
+    // React StrictMode (mode dev) menjalankan efek ini dua kali -> pakai satu request yang sama, bukan dua
+    if (!profileRequest.current) profileRequest.current = fetchProfile(token);
+    profileRequest.current.finally(() => setLoading(false));
   }, []);
 
   const login = async (token) => {
     localStorage.setItem('token', token);
+    profileRequest.current = null;
     const ok = await fetchProfile(token);
     if (!ok) localStorage.removeItem('token');
     return ok;
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('isLoggedIn_Ladeu');
-    setUser(null);
-    setPermissions([]);
+    clearSession();
   };
 
   const hasPermission = (permission) => permissions.includes(permission);
